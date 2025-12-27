@@ -41,32 +41,38 @@ object QtProjectFilesGenerator {
             writeFile(ideaDir, "cmake.xml", generateCmakeXml(qtPath))
 
             // Generate CMakeLists.txt
-            writeFile(baseDir, "CMakeLists.txt", generateCMakeLists(projectName))
+            writeFile(baseDir, "CMakeLists.txt", generateCMakeLists(projectName, settings.useStaticQt))
 
-            // Generate cmake/QtDynamicHelpers.cmake
-            writeFile(cmakeDir, "QtDynamicHelpers.cmake", generateQtDynamicHelpers())
+            // Generate cmake helper based on static/dynamic linking
+            if (settings.useStaticQt) {
+                writeFile(cmakeDir, "QtStaticHelpers.cmake", generateQtStaticHelpers())
+            } else {
+                writeFile(cmakeDir, "QtDynamicHelpers.cmake", generateQtDynamicHelpers())
+            }
 
             // Generate src/main.cpp
             writeFile(srcDir, "main.cpp", generateMainCpp(settings))
 
             // Generate mainwindow files based on titlebar setting
             if (settings.useCustomTitlebar) {
-                writeFile(includeUiDir, "mainwindow.h", generateMainWindowHeaderCustom(projectNameUpper))
-                writeFile(srcUiDir, "mainwindow.cpp", generateMainWindowCppCustom())
+                writeFile(includeUiDir, "mainwindow.h", generateMainWindowHeaderCustom(projectNameUpper, settings.useStaticQt))
+                writeFile(srcUiDir, "mainwindow.cpp", generateMainWindowCppCustom(settings.useStaticQt))
                 writeFile(uiDir, "mainwindow.ui", generateMainWindowUiCustom(settings))
             } else {
-                writeFile(includeUiDir, "mainwindow.h", generateMainWindowHeader(projectNameUpper))
-                writeFile(srcUiDir, "mainwindow.cpp", generateMainWindowCpp())
+                writeFile(includeUiDir, "mainwindow.h", generateMainWindowHeader(projectNameUpper, settings.useStaticQt))
+                writeFile(srcUiDir, "mainwindow.cpp", generateMainWindowCpp(settings.useStaticQt))
                 writeFile(uiDir, "mainwindow.ui", generateMainWindowUi(settings))
             }
 
             // Generate resources
-            writeFile(resDir, "resources.qrc", generateResourcesQrc())
+            writeFile(resDir, "resources.qrc", generateResourcesQrc(settings.useStaticQt))
             writeFile(stylesDir, "base.qss", generateBaseQss(settings.useCustomTitlebar))
 
-            // Generate QML files
-            writeFile(qmlDir, "main.qml", generateMainQml())
-            writeFile(qmlDir, "AnimatedButton.qml", generateAnimatedButtonQml())
+            // Generate QML files (only for dynamic Qt builds)
+            if (!settings.useStaticQt) {
+                writeFile(qmlDir, "main.qml", generateMainQml())
+                writeFile(qmlDir, "AnimatedButton.qml", generateAnimatedButtonQml())
+            }
 
             // Copy icon files
             copyResourceFile(iconsDir, "app.ico", "/Qt.ico")
@@ -127,11 +133,28 @@ bin/
 </project>
 """.trimIndent()
 
-    private fun generateCMakeLists(projectName: String): String = """
+    private fun generateCMakeLists(projectName: String, useStaticQt: Boolean): String {
+        val cmakeHelper = if (useStaticQt) "QtStaticHelpers" else "QtDynamicHelpers"
+        val configureFunction = if (useStaticQt) "configure_qt_static_target" else "configure_qt_dynamic_target"
+
+        // Static Qt typically doesn't include QML modules due to complexity
+        val qtModules = if (useStaticQt) {
+            """    Widgets
+    Gui"""
+        } else {
+            """    Widgets
+    Gui
+    Quick
+    Qml
+    QuickWidgets
+    QuickControls2"""
+        }
+
+        return """
 cmake_minimum_required(VERSION 3.20)
 project($projectName)
 
-include(cmake/QtDynamicHelpers.cmake)
+include(cmake/$cmakeHelper.cmake)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -165,15 +188,11 @@ if(WIN32)
     target_link_libraries(${"$"}{CMAKE_PROJECT_NAME} PRIVATE dwmapi)
 endif()
 
-configure_qt_dynamic_target(${"$"}{CMAKE_PROJECT_NAME}
-    Widgets
-    Gui
-    Quick
-    Qml
-    QuickWidgets
-    QuickControls2
+$configureFunction(${"$"}{CMAKE_PROJECT_NAME}
+$qtModules
 )
 """.trimIndent()
+    }
 
     private fun generateQtDynamicHelpers(): String = """
 # QtDynamicHelpers.cmake
@@ -404,7 +423,122 @@ function(configure_qt_dynamic_target TARGET_NAME)
 endfunction()
 """.trimIndent()
 
-    private fun generateMainCpp(settings: QtProjectSettings): String = """
+    private fun generateQtStaticHelpers(): String = """
+# QtStaticHelpers.cmake
+#
+# A module to simplify the creation of statically linked Qt6 applications.
+
+message(STATUS "QtStaticHelpers module loaded.")
+
+#[[
+# configure_qt_static_target
+#
+# Applies all necessary properties and links all required libraries
+# to build a target as a standalone, statically-linked Qt executable.
+#
+# Usage:
+#   configure_qt_static_target(<TARGET_NAME>
+#                              [COMPONENTS ...])
+#
+# Parameters:
+#   TARGET_NAME: The name of the executable target to configure.
+#   COMPONENTS: A list of Qt6 components to find and link (e.g., Widgets Gui Core).
+#
+]]#
+function(configure_qt_static_target TARGET_NAME)
+    # --- 1. Argument Parsing ---
+    if(NOT TARGET_NAME)
+        message(FATAL_ERROR "configure_qt_static_target() requires a TARGET_NAME as the first argument.")
+    endif()
+
+    # The rest of the arguments are the Qt components
+    list(APPEND QT_COMPONENTS ${"$"}{ARGN})
+    if(NOT QT_COMPONENTS)
+        message(WARNING "No Qt components specified for ${"$"}{TARGET_NAME}. Defaulting to Widgets.")
+        set(QT_COMPONENTS Widgets)
+    endif()
+
+    message(STATUS "Configuring static Qt build for target: ${"$"}{TARGET_NAME}")
+    message(STATUS "  - Required Qt Components: ${"$"}{QT_COMPONENTS}")
+
+    # --- 2. Find and Link Qt Libraries ---
+    find_package(Qt6 COMPONENTS ${"$"}{QT_COMPONENTS} REQUIRED)
+
+    # Build the list of qualified Qt6::Component names
+    set(QT_LIBRARIES_TO_LINK "")
+    foreach(COMPONENT ${"$"}{QT_COMPONENTS})
+        list(APPEND QT_LIBRARIES_TO_LINK "Qt6::${"$"}{COMPONENT}")
+    endforeach()
+
+    target_link_libraries(${"$"}{TARGET_NAME} PRIVATE ${"$"}{QT_LIBRARIES_TO_LINK})
+
+    # --- 3. Handle Static Plugins (The "Magic") ---
+    # A static Qt build must manually link the platform integration plugin.
+    if(WIN32)
+        message(STATUS "  - Linking Windows platform plugin.")
+        target_link_libraries(${"$"}{TARGET_NAME} PRIVATE Qt6::QWindowsIntegrationPlugin)
+    elseif(UNIX AND NOT APPLE)
+        message(STATUS "  - Linking Linux (XCB) platform plugin.")
+        # Note: You must have built Qt with xcb-static support
+        target_link_libraries(${"$"}{TARGET_NAME} PRIVATE Qt6::QXcbIntegrationPlugin)
+    elseif(APPLE)
+        message(STATUS "  - Linking macOS platform plugin.")
+        target_link_libraries(${"$"}{TARGET_NAME} PRIVATE Qt6::QCocoaIntegrationPlugin)
+    endif()
+
+    # --- 4. Set Target Properties for Build and Optimization ---
+    # Enable AUTOMOC, AUTORCC, AUTOUIC for the specific target
+    set_property(TARGET ${"$"}{TARGET_NAME} PROPERTY AUTOMOC ON)
+    set_property(TARGET ${"$"}{TARGET_NAME} PROPERTY AUTORCC ON)
+    set_property(TARGET ${"$"}{TARGET_NAME} PROPERTY AUTOUIC ON)
+
+    # --- 5. Set Compiler and Linker Flags using Generator Expressions ---
+    # Apply compiler flags for Release builds to optimize for size
+    target_compile_options(${"$"}{TARGET_NAME} PRIVATE
+        ${"$"}<${"$"}<CONFIG:Release>:-Os>
+    )
+
+    # Apply linker flags for static linking and stripping symbols in Release
+    target_link_libraries(${"$"}{TARGET_NAME} PRIVATE
+        ${"$"}<${"$"}<CONFIG:Release>:-static -s>
+        ${"$"}<${"$"}<CONFIG:Debug>:-static-libgcc -static-libstdc++>
+    )
+
+    # Hide console window in Release builds on Windows
+    if(WIN32)
+        set_target_properties(${"$"}{TARGET_NAME} PROPERTIES
+            WIN32_EXECUTABLE ${"$"}<${"$"}<CONFIG:Release>:TRUE>
+        )
+    endif()
+
+    message(STATUS "Configuration for ${"$"}{TARGET_NAME} complete.")
+endfunction()
+""".trimIndent()
+
+    private fun generateMainCpp(settings: QtProjectSettings): String {
+        return if (settings.useStaticQt) {
+            // Static Qt build - no QML/Quick support
+            """
+#include <QApplication>
+#include <QIcon>
+#include "ui/mainwindow.h"
+
+int main(int argc, char *argv[]) {
+    QApplication app(argc, argv);
+
+    // Set the application icon
+    app.setWindowIcon(QIcon(":/icons/app.png"));
+
+    // Create and show the main window
+    MainWindow window;
+    window.show();
+
+    return QApplication::exec();
+}
+""".trimIndent()
+        } else {
+            // Dynamic Qt build - full QML/Quick support
+            """
 #include <QApplication>
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
@@ -453,16 +587,23 @@ int main(int argc, char *argv[]) {
     return QApplication::exec();
 }
 """.trimIndent()
+        }
+    }
 
-    private fun generateMainWindowHeader(projectNameUpper: String): String = """
+    private fun generateMainWindowHeader(projectNameUpper: String, useStaticQt: Boolean): String {
+        val qmlIncludes = if (useStaticQt) "" else "#include <QQuickWidget>\n"
+        val qmlMembers = if (useStaticQt) "" else """
+    QQuickWidget *qmlWidget;
+    void setupQmlWidget();"""
+
+        return """
 #pragma once
 
 #ifndef ${projectNameUpper}_MAINWINDOW_H
 #define ${projectNameUpper}_MAINWINDOW_H
 
 #include <QMainWindow>
-#include <QQuickWidget>
-
+$qmlIncludes
 QT_BEGIN_NAMESPACE
 namespace Ui {
     class MainWindow;
@@ -477,16 +618,21 @@ public:
     ~MainWindow() override;
 
 private:
-    Ui::MainWindow *ui;
-    QQuickWidget *qmlWidget;
+    Ui::MainWindow *ui;$qmlMembers
     void loadStyleSheet();
-    void setupQmlWidget();
 };
 
 #endif // ${projectNameUpper}_MAINWINDOW_H
 """.trimIndent()
+    }
 
-    private fun generateMainWindowHeaderCustom(projectNameUpper: String): String = """
+    private fun generateMainWindowHeaderCustom(projectNameUpper: String, useStaticQt: Boolean): String {
+        val qmlIncludes = if (useStaticQt) "" else "#include <QQuickWidget>\n"
+        val qmlMembers = if (useStaticQt) "" else """
+    QQuickWidget *qmlWidget;
+    void setupQmlWidget();"""
+
+        return """
 #pragma once
 
 #ifndef ${projectNameUpper}_MAINWINDOW_H
@@ -494,8 +640,7 @@ private:
 
 #include <QMainWindow>
 #include <QPoint>
-#include <QQuickWidget>
-
+$qmlIncludes
 QT_BEGIN_NAMESPACE
 namespace Ui {
     class MainWindow;
@@ -528,18 +673,47 @@ private:
     bool isMaxButtonPressed = false;
     QPoint dragPosition;
 
-    Ui::MainWindow *ui;
-    QQuickWidget *qmlWidget;
+    Ui::MainWindow *ui;$qmlMembers
     void loadStyleSheet();
-    void setupQmlWidget();
     void setupWindowEffects();
     void installEventFilterRecursive(QWidget *widget);
 };
 
 #endif // ${projectNameUpper}_MAINWINDOW_H
 """.trimIndent()
+    }
 
-    private fun generateMainWindowCpp(): String = """
+    private fun generateMainWindowCpp(useStaticQt: Boolean): String {
+        return if (useStaticQt) {
+            """
+#include "ui/mainwindow.h"
+#include "ui_mainwindow.h"
+#include <QFile>
+#include <QTextStream>
+
+MainWindow::MainWindow(QWidget *parent)
+    : QMainWindow(parent)
+    , ui(new Ui::MainWindow)
+{
+    ui->setupUi(this);
+    loadStyleSheet();
+}
+
+MainWindow::~MainWindow() {
+    delete ui;
+}
+
+void MainWindow::loadStyleSheet() {
+    QFile styleSheet(":/styles/base.qss");
+    if (styleSheet.open(QFile::ReadOnly | QFile::Text)) {
+        QTextStream stream(&styleSheet);
+        this->setStyleSheet(stream.readAll());
+        styleSheet.close();
+    }
+}
+""".trimIndent()
+        } else {
+            """
 #include "ui/mainwindow.h"
 #include "ui_mainwindow.h"
 #include <QFile>
@@ -584,15 +758,39 @@ void MainWindow::setupQmlWidget() {
     }
 }
 """.trimIndent()
+        }
+    }
 
-    private fun generateMainWindowCppCustom(): String = """
+    private fun generateMainWindowCppCustom(useStaticQt: Boolean): String {
+        val qmlMemberInit = if (useStaticQt) "" else "\n      , qmlWidget(nullptr)"
+        val setupQmlCall = if (useStaticQt) "" else "\n    setupQmlWidget();"
+        val qmlSetupFunction = if (useStaticQt) "" else """
+
+void MainWindow::setupQmlWidget() {
+    qmlWidget = new QQuickWidget(this);
+    qmlWidget->setResizeMode(QQuickWidget::SizeRootObjectToView);
+    qmlWidget->setSource(QUrl("qrc:/qml/main.qml"));
+
+    // Install event filter for cursor updates
+    installEventFilterRecursive(qmlWidget);
+
+    if (ui->contentWidget->layout()) {
+        ui->contentWidget->layout()->addWidget(qmlWidget);
+    } else {
+        QVBoxLayout *layout = new QVBoxLayout(ui->contentWidget);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->addWidget(qmlWidget);
+    }
+}"""
+        val vboxLayoutInclude = if (useStaticQt) "" else "#include <QVBoxLayout>\n"
+
+        return """
 #include "ui/mainwindow.h"
 #include "ui_mainwindow.h"
 #include <QFile>
 #include <QTextStream>
 #include <QMouseEvent>
-#include <QVBoxLayout>
-#include <QScreen>
+${vboxLayoutInclude}#include <QScreen>
 #include <QApplication>
 #include <QEvent>
 #include <QStyle>
@@ -612,8 +810,7 @@ void MainWindow::setupQmlWidget() {
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
-      , ui(new Ui::MainWindow)
-      , qmlWidget(nullptr) {
+      , ui(new Ui::MainWindow)$qmlMemberInit {
     ui->setupUi(this);
 
     // Enable mouse tracking for resize cursor updates
@@ -623,8 +820,7 @@ MainWindow::MainWindow(QWidget *parent)
     // Install event filter on all child widgets to catch mouse moves
     installEventFilterRecursive(this);
 
-    loadStyleSheet();
-    setupQmlWidget();
+    loadStyleSheet();$setupQmlCall
     setupWindowEffects();
 
 #ifdef Q_OS_WIN
@@ -889,25 +1085,9 @@ void MainWindow::loadStyleSheet() {
         this->setStyleSheet(stream.readAll());
         styleSheet.close();
     }
-}
-
-void MainWindow::setupQmlWidget() {
-    qmlWidget = new QQuickWidget(this);
-    qmlWidget->setResizeMode(QQuickWidget::SizeRootObjectToView);
-    qmlWidget->setSource(QUrl("qrc:/qml/main.qml"));
-
-    // Install event filter for cursor updates
-    installEventFilterRecursive(qmlWidget);
-
-    if (ui->contentWidget->layout()) {
-        ui->contentWidget->layout()->addWidget(qmlWidget);
-    } else {
-        QVBoxLayout *layout = new QVBoxLayout(ui->contentWidget);
-        layout->setContentsMargins(0, 0, 0, 0);
-        layout->addWidget(qmlWidget);
-    }
-}
+}$qmlSetupFunction
 """.trimIndent()
+    }
 
     private fun generateMainWindowUi(settings: QtProjectSettings): String = """
 <?xml version="1.0" encoding="UTF-8"?>
@@ -1194,19 +1374,23 @@ void MainWindow::setupQmlWidget() {
 </ui>
 """.trimIndent()
 
-    private fun generateResourcesQrc(): String = """
+    private fun generateResourcesQrc(useStaticQt: Boolean): String {
+        val qmlResources = if (useStaticQt) "" else """
+  <qresource prefix="/">
+    <file>qml/main.qml</file>
+    <file>qml/AnimatedButton.qml</file>
+  </qresource>"""
+
+        return """
 <RCC>
   <qresource prefix="/">
     <file>styles/base.qss</file>
     <file>icons/app.ico</file>
     <file>icons/app.png</file>
-  </qresource>
-  <qresource prefix="/">
-    <file>qml/main.qml</file>
-    <file>qml/AnimatedButton.qml</file>
-  </qresource>
+  </qresource>$qmlResources
 </RCC>
 """.trimIndent()
+    }
 
     private fun generateBaseQss(useCustomTitlebar: Boolean): String {
         val titlebarStyles = if (useCustomTitlebar) """

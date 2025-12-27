@@ -7,5 +7,6 @@ data class QtProjectSettings(
     var minHeight: Int = 600,
     var startupWidth: Int = 1280,
     var startupHeight: Int = 720,
-    var useCustomTitlebar: Boolean = false
+    var useCustomTitlebar: Boolean = false,
+    var useStaticQt: Boolean = false
 )

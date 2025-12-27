@@ -23,6 +23,7 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
     companion object {
         private val LOG = Logger.getInstance(QtProjectSettingsPanel::class.java)
         private const val QT_PATH_PROPERTY_KEY = "qt.project.setup.qt.path"
+        private const val USE_STATIC_QT_PROPERTY_KEY = "qt.project.setup.use.static.qt"
         private const val DEFAULT_QT_PATH = "C:/Qt/6.8.0/mingw_64"
     }
 
@@ -45,6 +46,10 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
     private val startupWidthSpinner = JSpinner(SpinnerNumberModel(1280, 100, 10000, 10))
     private val startupHeightSpinner = JSpinner(SpinnerNumberModel(720, 100, 10000, 10))
     private val useCustomTitlebarCheckbox = JBCheckBox("Use custom frameless titlebar", false)
+    private val useStaticQtCheckbox = JBCheckBox(
+        "Use statically linked Qt",
+        PropertiesComponent.getInstance().getBoolean(USE_STATIC_QT_PROPERTY_KEY, false)
+    )
 
     init {
         LOG.info("QtProjectSettingsPanel: Constructor called")
@@ -53,9 +58,12 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
     override fun getSettings(): QtProjectSettings {
         LOG.info("QtProjectSettingsPanel.getSettings() called")
         val qtPath = qtPathField.text
+        val useStaticQt = useStaticQtCheckbox.isSelected
 
-        // Cache the Qt path for future use
-        PropertiesComponent.getInstance().setValue(QT_PATH_PROPERTY_KEY, qtPath)
+        // Cache settings for future use
+        val properties = PropertiesComponent.getInstance()
+        properties.setValue(QT_PATH_PROPERTY_KEY, qtPath)
+        properties.setValue(USE_STATIC_QT_PROPERTY_KEY, useStaticQt)
 
         return QtProjectSettings(
             qtPath = qtPath,
@@ -64,7 +72,8 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
             minHeight = minHeightSpinner.value as Int,
             startupWidth = startupWidthSpinner.value as Int,
             startupHeight = startupHeightSpinner.value as Int,
-            useCustomTitlebar = useCustomTitlebarCheckbox.isSelected
+            useCustomTitlebar = useCustomTitlebarCheckbox.isSelected,
+            useStaticQt = useStaticQt
         )
     }
 
@@ -79,6 +88,9 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
             override fun removeUpdate(e: DocumentEvent?) = checkValid.run()
             override fun changedUpdate(e: DocumentEvent?) = checkValid.run()
         })
+
+        // Add listener to trigger validation when static Qt checkbox changes
+        useStaticQtCheckbox.addActionListener { checkValid.run() }
 
         return panel {
             attachTo(this)
@@ -114,6 +126,7 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
             }
 
             row {
+                cell(useStaticQtCheckbox)
                 cell(useCustomTitlebarCheckbox)
             }
         }
@@ -123,6 +136,8 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
     override fun validate(): ValidationInfo? {
         LOG.info("QtProjectSettingsPanel.validate() called")
         val qtPath = qtPathField.text
+        val useStaticQt = useStaticQtCheckbox.isSelected
+
         if (qtPath.isBlank()) {
             return ValidationInfo("Qt installation path cannot be empty", qtPathField)
         }
@@ -133,9 +148,30 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
         if (!file.isDirectory) {
             return ValidationInfo("Qt installation path must be a directory", qtPathField)
         }
-        val binDir = File(file, "bin")
-        if (!binDir.exists() || !binDir.isDirectory) {
-            return ValidationInfo("Qt installation path should contain a 'bin' directory", qtPathField)
+
+        if (useStaticQt) {
+            // For static Qt, check for lib directory with static libraries
+            val libDir = File(file, "lib")
+            if (!libDir.exists() || !libDir.isDirectory) {
+                return ValidationInfo("Static Qt installation path should contain a 'lib' directory", qtPathField)
+            }
+            // Check for static library (Qt6Core.lib for MSVC or libQt6Core.a for MinGW)
+            val qt6CoreLib = File(libDir, "libQt6Core.a")
+            val qt6CoreLibMsvc = File(libDir, "Qt6Core.lib")
+            if (!qt6CoreLib.exists() && !qt6CoreLibMsvc.exists()) {
+                return ValidationInfo("Static Qt installation path should contain Qt6Core static library in 'lib' directory", qtPathField)
+            }
+        } else {
+            // For dynamic Qt, check for bin directory with DLLs
+            val binDir = File(file, "bin")
+            if (!binDir.exists() || !binDir.isDirectory) {
+                return ValidationInfo("Qt installation path should contain a 'bin' directory", qtPathField)
+            }
+            // Check if Qt6Core.dll exists
+            val qt6CoreDll = File(binDir, "Qt6Core.dll")
+            if (!qt6CoreDll.exists()) {
+                return ValidationInfo("Qt installation path should contain 'Qt6Core.dll'", qtPathField)
+            }
         }
         return null
     }
