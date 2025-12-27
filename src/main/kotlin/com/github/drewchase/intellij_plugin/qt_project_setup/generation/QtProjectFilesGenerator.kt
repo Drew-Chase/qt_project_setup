@@ -75,6 +75,11 @@ object QtProjectFilesGenerator {
             if (useQml) {
                 writeFile(qmlDir, "main.qml", generateMainQml())
                 writeFile(qmlDir, "AnimatedButton.qml", generateAnimatedButtonQml())
+            } else {
+                // Generate StartupPage widget for Qt Widgets mode
+                writeFile(includeUiDir, "startup_page.h", generateStartupPageHeader(projectNameUpper))
+                writeFile(srcUiDir, "startup_page.cpp", generateStartupPageCpp())
+                writeFile(uiDir, "startup_page.ui", generateStartupPageUi())
             }
 
             // Copy icon files
@@ -612,10 +617,12 @@ int main(int argc, char *argv[]) {
     }
 
     private fun generateMainWindowHeader(projectNameUpper: String, useQml: Boolean): String {
-        val qmlIncludes = if (!useQml) "" else "#include <QQuickWidget>\n"
-        val qmlMembers = if (!useQml) "" else """
+        val contentIncludes = if (useQml) "#include <QQuickWidget>\n" else "#include \"ui/startup_page.h\"\n"
+        val contentMembers = if (useQml) """
     QQuickWidget *qmlWidget;
-    void setupQmlWidget();"""
+    void setupQmlWidget();""" else """
+    StartupPage *startupPage;
+    void setupStartupPage();"""
 
         return """
 #pragma once
@@ -624,7 +631,7 @@ int main(int argc, char *argv[]) {
 #define ${projectNameUpper}_MAINWINDOW_H
 
 #include <QMainWindow>
-$qmlIncludes
+$contentIncludes
 QT_BEGIN_NAMESPACE
 namespace Ui {
     class MainWindow;
@@ -639,7 +646,7 @@ public:
     ~MainWindow() override;
 
 private:
-    Ui::MainWindow *ui;$qmlMembers
+    Ui::MainWindow *ui;$contentMembers
     void loadStyleSheet();
 };
 
@@ -648,10 +655,12 @@ private:
     }
 
     private fun generateMainWindowHeaderCustom(projectNameUpper: String, useQml: Boolean): String {
-        val qmlIncludes = if (!useQml) "" else "#include <QQuickWidget>\n"
-        val qmlMembers = if (!useQml) "" else """
+        val contentIncludes = if (useQml) "#include <QQuickWidget>\n" else "#include \"ui/startup_page.h\"\n"
+        val contentMembers = if (useQml) """
     QQuickWidget *qmlWidget;
-    void setupQmlWidget();"""
+    void setupQmlWidget();""" else """
+    StartupPage *startupPage;
+    void setupStartupPage();"""
 
         return """
 #pragma once
@@ -661,7 +670,7 @@ private:
 
 #include <QMainWindow>
 #include <QPoint>
-$qmlIncludes
+$contentIncludes
 QT_BEGIN_NAMESPACE
 namespace Ui {
     class MainWindow;
@@ -694,7 +703,7 @@ private:
     bool isMaxButtonPressed = false;
     QPoint dragPosition;
 
-    Ui::MainWindow *ui;$qmlMembers
+    Ui::MainWindow *ui;$contentMembers
     void loadStyleSheet();
     void setupWindowEffects();
     void installEventFilterRecursive(QWidget *widget);
@@ -711,13 +720,16 @@ private:
 #include "ui_mainwindow.h"
 #include <QFile>
 #include <QTextStream>
+#include <QVBoxLayout>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
+    , startupPage(nullptr)
 {
     ui->setupUi(this);
     loadStyleSheet();
+    setupStartupPage();
 }
 
 MainWindow::~MainWindow() {
@@ -730,6 +742,19 @@ void MainWindow::loadStyleSheet() {
         QTextStream stream(&styleSheet);
         this->setStyleSheet(stream.readAll());
         styleSheet.close();
+    }
+}
+
+void MainWindow::setupStartupPage() {
+    startupPage = new StartupPage(this);
+
+    // Add to the content widget
+    if (ui->contentWidget->layout()) {
+        ui->contentWidget->layout()->addWidget(startupPage);
+    } else {
+        QVBoxLayout *layout = new QVBoxLayout(ui->contentWidget);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->addWidget(startupPage);
     }
 }
 """.trimIndent()
@@ -783,9 +808,9 @@ void MainWindow::setupQmlWidget() {
     }
 
     private fun generateMainWindowCppCustom(useQml: Boolean): String {
-        val qmlMemberInit = if (!useQml) "" else "\n      , qmlWidget(nullptr)"
-        val setupQmlCall = if (!useQml) "" else "\n    setupQmlWidget();"
-        val qmlSetupFunction = if (!useQml) "" else """
+        val contentMemberInit = if (useQml) "\n      , qmlWidget(nullptr)" else "\n      , startupPage(nullptr)"
+        val setupContentCall = if (useQml) "\n    setupQmlWidget();" else "\n    setupStartupPage();"
+        val contentSetupFunction = if (useQml) """
 
 void MainWindow::setupQmlWidget() {
     qmlWidget = new QQuickWidget(this);
@@ -802,8 +827,23 @@ void MainWindow::setupQmlWidget() {
         layout->setContentsMargins(0, 0, 0, 0);
         layout->addWidget(qmlWidget);
     }
+}""" else """
+
+void MainWindow::setupStartupPage() {
+    startupPage = new StartupPage(this);
+
+    // Install event filter for cursor updates
+    installEventFilterRecursive(startupPage);
+
+    if (ui->contentWidget->layout()) {
+        ui->contentWidget->layout()->addWidget(startupPage);
+    } else {
+        QVBoxLayout *layout = new QVBoxLayout(ui->contentWidget);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->addWidget(startupPage);
+    }
 }"""
-        val vboxLayoutInclude = if (!useQml) "" else "#include <QVBoxLayout>\n"
+        val vboxLayoutInclude = "#include <QVBoxLayout>\n"
 
         return """
 #include "ui/mainwindow.h"
@@ -831,7 +871,7 @@ ${vboxLayoutInclude}#include <QScreen>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
-      , ui(new Ui::MainWindow)$qmlMemberInit {
+      , ui(new Ui::MainWindow)$contentMemberInit {
     ui->setupUi(this);
 
     // Enable mouse tracking for resize cursor updates
@@ -841,7 +881,7 @@ MainWindow::MainWindow(QWidget *parent)
     // Install event filter on all child widgets to catch mouse moves
     installEventFilterRecursive(this);
 
-    loadStyleSheet();$setupQmlCall
+    loadStyleSheet();$setupContentCall
     setupWindowEffects();
 
 #ifdef Q_OS_WIN
@@ -1106,7 +1146,7 @@ void MainWindow::loadStyleSheet() {
         this->setStyleSheet(stream.readAll());
         styleSheet.close();
     }
-}$qmlSetupFunction
+}$contentSetupFunction
 """.trimIndent()
     }
 
@@ -1655,5 +1695,308 @@ Button {
 
     private fun generateWindowsResourceFile(): String = """
 IDI_ICON1 ICON "icons/app.ico"
+""".trimIndent()
+
+    private fun generateStartupPageHeader(projectNameUpper: String): String = """
+#pragma once
+
+#ifndef ${projectNameUpper}_STARTUP_PAGE_H
+#define ${projectNameUpper}_STARTUP_PAGE_H
+
+#include <QWidget>
+#include <QPropertyAnimation>
+#include <QSequentialAnimationGroup>
+
+QT_BEGIN_NAMESPACE
+namespace Ui {
+    class StartupPage;
+}
+QT_END_NAMESPACE
+
+class StartupPage : public QWidget {
+    Q_OBJECT
+
+public:
+    explicit StartupPage(QWidget *parent = nullptr);
+    ~StartupPage() override;
+
+protected:
+    bool eventFilter(QObject *obj, QEvent *event) override;
+
+private slots:
+    void onButtonClicked();
+
+private:
+    Ui::StartupPage *ui;
+    int clickCount = 0;
+
+    QSequentialAnimationGroup *pulseAnimation;
+    QPropertyAnimation *clickAnimation;
+
+    void setupAnimations();
+    void startPulseAnimation();
+};
+
+#endif // ${projectNameUpper}_STARTUP_PAGE_H
+""".trimIndent()
+
+    private fun generateStartupPageCpp(): String = """
+#include "ui/startup_page.h"
+#include "ui_startup_page.h"
+#include <QEvent>
+#include <QTimer>
+#include <QGraphicsOpacityEffect>
+
+StartupPage::StartupPage(QWidget *parent)
+    : QWidget(parent)
+    , ui(new Ui::StartupPage)
+    , pulseAnimation(nullptr)
+    , clickAnimation(nullptr)
+{
+    ui->setupUi(this);
+
+    // Connect button click
+    connect(ui->clickButton, &QPushButton::clicked, this, &StartupPage::onButtonClicked);
+
+    // Install event filter for hover effects
+    ui->clickButton->installEventFilter(this);
+
+    setupAnimations();
+    startPulseAnimation();
+}
+
+StartupPage::~StartupPage() {
+    delete ui;
+}
+
+void StartupPage::setupAnimations() {
+    // Pulse animation (scale effect simulated via stylesheet)
+    pulseAnimation = new QSequentialAnimationGroup(this);
+
+    // We'll use opacity for a subtle pulse effect since Qt Widgets doesn't have easy scale
+    auto *glowEffect = new QGraphicsOpacityEffect(ui->clickButton);
+    glowEffect->setOpacity(1.0);
+    ui->clickButton->setGraphicsEffect(glowEffect);
+
+    auto *fadeOut = new QPropertyAnimation(glowEffect, "opacity", this);
+    fadeOut->setDuration(1000);
+    fadeOut->setStartValue(1.0);
+    fadeOut->setEndValue(0.85);
+    fadeOut->setEasingCurve(QEasingCurve::InOutQuad);
+
+    auto *fadeIn = new QPropertyAnimation(glowEffect, "opacity", this);
+    fadeIn->setDuration(1000);
+    fadeIn->setStartValue(0.85);
+    fadeIn->setEndValue(1.0);
+    fadeIn->setEasingCurve(QEasingCurve::InOutQuad);
+
+    pulseAnimation->addAnimation(fadeOut);
+    pulseAnimation->addAnimation(fadeIn);
+    pulseAnimation->setLoopCount(-1); // Infinite loop
+}
+
+void StartupPage::startPulseAnimation() {
+    if (pulseAnimation) {
+        pulseAnimation->start();
+    }
+}
+
+void StartupPage::onButtonClicked() {
+    clickCount++;
+    QString text = QString("Clicked %1 time%2").arg(clickCount).arg(clickCount > 1 ? "s" : "");
+    ui->statusLabel->setText(text);
+
+    // Click animation - briefly change style
+    QString originalStyle = ui->clickButton->styleSheet();
+    ui->clickButton->setStyleSheet(originalStyle + "background-color: #3d7fc8;");
+
+    QTimer::singleShot(100, this, [this, originalStyle]() {
+        ui->clickButton->setStyleSheet(originalStyle);
+    });
+}
+
+bool StartupPage::eventFilter(QObject *obj, QEvent *event) {
+    if (obj == ui->clickButton) {
+        if (event->type() == QEvent::Enter) {
+            // Hover enter - add glow effect
+            ui->clickButton->setStyleSheet(
+                ui->clickButton->styleSheet() +
+                "border: 2px solid rgba(255, 255, 255, 0.5);"
+            );
+        } else if (event->type() == QEvent::Leave) {
+            // Hover leave - remove glow effect
+            QString style = ui->clickButton->styleSheet();
+            style.remove("border: 2px solid rgba(255, 255, 255, 0.5);");
+            ui->clickButton->setStyleSheet(style);
+        }
+    }
+    return QWidget::eventFilter(obj, event);
+}
+""".trimIndent()
+
+    private fun generateStartupPageUi(): String = """
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>StartupPage</class>
+ <widget class="QWidget" name="StartupPage">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>600</width>
+    <height>400</height>
+   </rect>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">QWidget#StartupPage {
+    background-color: #2b2b2b;
+}</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <property name="spacing">
+    <number>20</number>
+   </property>
+   <item>
+    <spacer name="topSpacer">
+     <property name="orientation">
+      <enum>Qt::Orientation::Vertical</enum>
+     </property>
+     <property name="sizeHint" stdset="0">
+      <size>
+       <width>20</width>
+       <height>40</height>
+      </size>
+     </property>
+    </spacer>
+   </item>
+   <item>
+    <widget class="QLabel" name="welcomeLabel">
+     <property name="styleSheet">
+      <string notr="true">QLabel {
+    color: #ffffff;
+    font-size: 24px;
+    font-weight: bold;
+}</string>
+     </property>
+     <property name="text">
+      <string>Welcome to your Qt Application</string>
+     </property>
+     <property name="alignment">
+      <set>Qt::AlignmentFlag::AlignCenter</set>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="subtitleLabel">
+     <property name="styleSheet">
+      <string notr="true">QLabel {
+    color: #aaaaaa;
+    font-size: 14px;
+}</string>
+     </property>
+     <property name="text">
+      <string>Click the animated button below!</string>
+     </property>
+     <property name="alignment">
+      <set>Qt::AlignmentFlag::AlignCenter</set>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="buttonLayout">
+     <item>
+      <spacer name="leftButtonSpacer">
+       <property name="orientation">
+        <enum>Qt::Orientation::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="clickButton">
+       <property name="minimumSize">
+        <size>
+         <width>160</width>
+         <height>50</height>
+        </size>
+       </property>
+       <property name="styleSheet">
+        <string notr="true">QPushButton {
+    background-color: #4a90d9;
+    color: #ffffff;
+    font-size: 16px;
+    font-weight: bold;
+    border: none;
+    border-radius: 8px;
+    padding: 12px 24px;
+}
+
+QPushButton:hover {
+    background-color: #5da3ec;
+}
+
+QPushButton:pressed {
+    background-color: #3d7fc8;
+}</string>
+       </property>
+       <property name="text">
+        <string>Click Me!</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="rightButtonSpacer">
+       <property name="orientation">
+        <enum>Qt::Orientation::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QLabel" name="statusLabel">
+     <property name="styleSheet">
+      <string notr="true">QLabel {
+    color: #888888;
+    font-size: 12px;
+}</string>
+     </property>
+     <property name="text">
+      <string>Ready</string>
+     </property>
+     <property name="alignment">
+      <set>Qt::AlignmentFlag::AlignCenter</set>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <spacer name="bottomSpacer">
+     <property name="orientation">
+      <enum>Qt::Orientation::Vertical</enum>
+     </property>
+     <property name="sizeHint" stdset="0">
+      <size>
+       <width>20</width>
+       <height>40</height>
+      </size>
+     </property>
+    </spacer>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
 """.trimIndent()
 }
