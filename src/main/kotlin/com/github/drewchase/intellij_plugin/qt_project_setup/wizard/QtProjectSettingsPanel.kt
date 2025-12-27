@@ -10,6 +10,7 @@ import com.intellij.ui.components.JBTextField
 import com.intellij.ui.dsl.builder.AlignX
 import com.intellij.ui.dsl.builder.Panel
 import com.intellij.ui.dsl.builder.panel
+import java.io.File
 import javax.swing.JComponent
 import javax.swing.JSpinner
 import javax.swing.SpinnerNumberModel
@@ -111,6 +112,17 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
         val qtPath = qtPathField.text
         if (qtPath.isBlank()) {
             return ValidationInfo("Qt installation path cannot be empty", qtPathField)
+        }
+        val file = File(qtPath)
+        if (!file.exists()) {
+            return ValidationInfo("Qt installation path does not exist", qtPathField)
+        }
+        if (!file.isDirectory) {
+            return ValidationInfo("Qt installation path must be a directory", qtPathField)
+        }
+        val binDir = File(file, "bin")
+        if (!binDir.exists() || !binDir.isDirectory) {
+            return ValidationInfo("Qt installation path should contain a 'bin' directory", qtPathField)
         }
         return null
     }

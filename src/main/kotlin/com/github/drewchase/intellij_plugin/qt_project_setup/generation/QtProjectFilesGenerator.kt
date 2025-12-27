@@ -32,6 +32,9 @@ object QtProjectFilesGenerator {
             val projectName = project.name
             val projectNameUpper = projectName.uppercase().replace("-", "_").replace(" ", "_")
             val qtPath = settings.qtPath.replace("\\", "/")
+            
+            // Generate .gitignore
+            writeFile(baseDir, ".gitignore", generateGitIgnore())
 
             // Generate .idea/cmake.xml with Qt path
             writeFile(ideaDir, "cmake.xml", generateCmakeXml(qtPath))
@@ -82,6 +85,13 @@ object QtProjectFilesGenerator {
             VfsUtil.saveText(file, content)
         }
     }
+
+    private fun generateGitIgnore(): String = """
+.idea/
+cmake-build-*/
+bin/
+*.user
+""".trimIndent()
 
     private fun generateCmakeXml(qtPath: String): String = """
 <?xml version="1.0" encoding="UTF-8"?>
@@ -492,8 +502,6 @@ private:
     void setupQmlWidget();
     void setupWindowEffects();
     void installEventFilterRecursive(QWidget *widget);
-
-    static constexpr int RESIZE_BORDER = 8;
 };
 
 #endif // ${projectNameUpper}_MAINWINDOW_H
@@ -555,6 +563,7 @@ void MainWindow::setupQmlWidget() {
 #include <QScreen>
 #include <QApplication>
 #include <QEvent>
+#include <QStyle>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -571,15 +580,8 @@ void MainWindow::setupQmlWidget() {
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
-    , ui(new Ui::MainWindow)
-    , qmlWidget(nullptr)
-    , resizeEdge(None)
-{
-#ifdef Q_OS_WIN
-    setWindowFlags(Qt::FramelessWindowHint | Qt::WindowSystemMenuHint |
-                   Qt::WindowMinimizeButtonHint | Qt::WindowMaximizeButtonHint);
-#endif
-
+      , ui(new Ui::MainWindow)
+      , qmlWidget(nullptr) {
     ui->setupUi(this);
 
     // Enable mouse tracking for resize cursor updates
@@ -594,8 +596,14 @@ MainWindow::MainWindow(QWidget *parent)
     setupWindowEffects();
 
 #ifdef Q_OS_WIN
+    // Add thick frame for resize and animations, but we'll hide the title bar
+    HWND hwnd = reinterpret_cast<HWND>(winId());
+    LONG style = GetWindowLong(hwnd, GWL_STYLE);
+    style |= WS_THICKFRAME | WS_CAPTION | WS_MAXIMIZEBOX | WS_MINIMIZEBOX | WS_SYSMENU;
+    SetWindowLong(hwnd, GWL_STYLE, style);
+
     connect(ui->closeButton, &QPushButton::clicked, this, &MainWindow::close);
-    connect(ui->minimizeButton, &QPushButton::clicked, this, [this]() {
+    connect(ui->minimizeButton, &QPushButton::clicked, this, [this] {
         ShowWindow(reinterpret_cast<HWND>(winId()), SW_MINIMIZE);
     });
     connect(ui->maximizeButton, &QPushButton::clicked, this, &MainWindow::toggleMaximize);
@@ -609,11 +617,13 @@ MainWindow::~MainWindow() {
 void MainWindow::toggleMaximize() {
 #ifdef Q_OS_WIN
     HWND hwnd = reinterpret_cast<HWND>(winId());
-    if (isMaximized()) {
+    if (IsZoomed(hwnd)) {
         ShowWindow(hwnd, SW_RESTORE);
     } else {
         ShowWindow(hwnd, SW_MAXIMIZE);
     }
+    // Force a frame change to ensure NCCALCSIZE is called and layouts are updated
+    SetWindowPos(hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
 #else
     if (isMaximized()) {
         showNormal();
@@ -630,10 +640,6 @@ void MainWindow::setupWindowEffects() {
     // Enable rounded corners on Windows 11+
     int preference = DWMWCP_ROUND;
     DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &preference, sizeof(preference));
-
-    // Extend frame into client area to get shadow
-    MARGINS margins = {1, 1, 1, 1};
-    DwmExtendFrameIntoClientArea(hwnd, &margins);
 #endif
 }
 
@@ -643,8 +649,8 @@ void MainWindow::installEventFilterRecursive(QWidget *widget) {
     widget->setMouseTracking(true);
     widget->installEventFilter(this);
 
-    for (QObject *child : widget->children()) {
-        if (QWidget *childWidget = qobject_cast<QWidget*>(child)) {
+    for (QObject *child: widget->children()) {
+        if (QWidget *childWidget = qobject_cast<QWidget *>(child)) {
             installEventFilterRecursive(childWidget);
         }
     }
@@ -661,6 +667,29 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
 
     if (msg->message == WM_NCCALCSIZE) {
         if (msg->wParam == TRUE) {
+            NCCALCSIZE_PARAMS* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(msg->lParam);
+
+            if (IsZoomed(msg->hwnd)) {
+                // When maximized, remove the invisible border Windows adds
+                HMONITOR hMonitor = MonitorFromWindow(msg->hwnd, MONITOR_DEFAULTTONEAREST);
+                MONITORINFO mi;
+                mi.cbSize = sizeof(mi);
+                GetMonitorInfo(hMonitor, &mi);
+                params->rgrc[0] = mi.rcWork;
+            } else {
+                // Adjust for the invisible borders added by WS_THICKFRAME
+                int border_x = GetSystemMetrics(SM_CXSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+                int border_y = GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+                RECT* clientRect = &params->rgrc[0];
+                clientRect->left += border_x;
+                clientRect->right -= border_x;
+                clientRect->bottom -= border_y;
+                // Leave only 1 pixel at the top for Windows 11 Snap Layouts.
+                // Using border_y here causes a black bar because the top invisible border
+                // is handled differently by Windows when WS_CAPTION is present.
+                clientRect->top += 1;
+            }
+
             *result = 0;
             return true;
         }
@@ -669,82 +698,80 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
     // Handle hit testing for resize edges and maximize button
     if (msg->message == WM_NCHITTEST) {
         POINT pt = {GET_X_LPARAM(msg->lParam), GET_Y_LPARAM(msg->lParam)};
-        ScreenToClient(msg->hwnd, &pt);
 
-        // Check if over maximize button - return HTMAXBUTTON for Snap Layouts
+        // Convert to client coordinates using Windows API
+        POINT clientPt = pt;
+        ScreenToClient(msg->hwnd, &clientPt);
+        QPoint localPos(clientPt.x, clientPt.y);
+
+        // Check title bar buttons FIRST using local coordinates
         if (ui->maximizeButton) {
-            QPoint btnPos = ui->maximizeButton->mapFrom(this, QPoint(pt.x, pt.y));
+            QPoint btnPos = ui->maximizeButton->mapFrom(this, localPos);
             if (ui->maximizeButton->rect().contains(btnPos)) {
                 *result = HTMAXBUTTON;
                 return true;
             }
         }
 
+        if (ui->closeButton) {
+            QPoint btnPos = ui->closeButton->mapFrom(this, localPos);
+            if (ui->closeButton->rect().contains(btnPos)) {
+                *result = HTCLIENT;
+                return true;
+            }
+        }
+
+        if (ui->minimizeButton) {
+            QPoint btnPos = ui->minimizeButton->mapFrom(this, localPos);
+            if (ui->minimizeButton->rect().contains(btnPos)) {
+                *result = HTCLIENT;
+                return true;
+            }
+        }
+
         // Handle resize edges (only when not maximized)
-        if (!isMaximized()) {
-            int x = pt.x;
-            int y = pt.y;
-            int w = width();
-            int h = height();
+        if (!IsZoomed(msg->hwnd)) {
+            RECT clientRect;
+            GetClientRect(msg->hwnd, &clientRect);
+            int w = clientRect.right - clientRect.left;
+            int h = clientRect.bottom - clientRect.top;
 
-            bool left = x < RESIZE_BORDER;
-            bool right = x >= w - RESIZE_BORDER;
-            bool top = y < RESIZE_BORDER;
-            bool bottom = y >= h - RESIZE_BORDER;
+            int x = clientPt.x;
+            int y = clientPt.y;
 
-            if (left && top) {
-                *result = HTTOPLEFT;
-                return true;
-            }
-            if (right && top) {
-                *result = HTTOPRIGHT;
-                return true;
-            }
-            if (left && bottom) {
-                *result = HTBOTTOMLEFT;
-                return true;
-            }
-            if (right && bottom) {
-                *result = HTBOTTOMRIGHT;
-                return true;
-            }
-            if (left) {
-                *result = HTLEFT;
-                return true;
-            }
-            if (right) {
-                *result = HTRIGHT;
-                return true;
-            }
-            if (top) {
-                *result = HTTOP;
-                return true;
-            }
-            if (bottom) {
-                *result = HTBOTTOM;
+            // Use the invisible borders (negative coordinates) plus a 2-pixel
+            // internal area for resize handle detection.
+            const int hit = 2;
+            bool left = x < hit;
+            bool right = x >= w - hit;
+            bool top = y < hit;
+            bool bottom = y >= h - hit;
+
+            if (left && top) { *result = HTTOPLEFT; return true; }
+            if (right && top) { *result = HTTOPRIGHT; return true; }
+            if (left && bottom) { *result = HTBOTTOMLEFT; return true; }
+            if (right && bottom) { *result = HTBOTTOMRIGHT; return true; }
+            if (left) { *result = HTLEFT; return true; }
+            if (right) { *result = HTRIGHT; return true; }
+            if (top) { *result = HTTOP; return true; }
+            if (bottom) { *result = HTBOTTOM; return true; }
+        }
+
+        // Return HTCAPTION for titlebar to enable native window dragging & snap
+        if (ui->titlebar) {
+            QPoint titlePos = ui->titlebar->mapFrom(this, localPos);
+            if (ui->titlebar->rect().contains(titlePos)) {
+                *result = HTCAPTION;
                 return true;
             }
         }
     }
 
     if (msg->message == WM_GETMINMAXINFO) {
-        MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(msg->lParam);
-
-        HMONITOR hMonitor = MonitorFromWindow(msg->hwnd, MONITOR_DEFAULTTONEAREST);
-        MONITORINFO mi;
-        mi.cbSize = sizeof(mi);
-        GetMonitorInfo(hMonitor, &mi);
-
-        // Set maximum size and position for maximized state
-        mmi->ptMaxPosition.x = mi.rcWork.left - mi.rcMonitor.left;
-        mmi->ptMaxPosition.y = mi.rcWork.top - mi.rcMonitor.top;
-        mmi->ptMaxSize.x = mi.rcWork.right - mi.rcWork.left;
-        mmi->ptMaxSize.y = mi.rcWork.bottom - mi.rcWork.top;
-
-        // Set minimum tracking size from Qt's minimumSize
+        // Just handle minimum size from Qt
+        MINMAXINFO *mmi = reinterpret_cast<MINMAXINFO *>(msg->lParam);
         mmi->ptMinTrackSize.x = minimumWidth();
         mmi->ptMinTrackSize.y = minimumHeight();
-
         *result = 0;
         return true;
     }
@@ -768,69 +795,49 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
         isMaxButtonPressed = false;
     }
 
+    // Handle mouse hover for Snap Layouts popup
+    if (msg->message == WM_NCMOUSEMOVE) {
+        if (msg->wParam == HTMAXBUTTON) {
+            // Use dynamic property to trigger hover style
+            ui->maximizeButton->setProperty("hovered", true);
+            ui->maximizeButton->style()->unpolish(ui->maximizeButton);
+            ui->maximizeButton->style()->polish(ui->maximizeButton);
+            ui->maximizeButton->update();
+            *result = 0;
+            return false;  // Let Windows handle for Snap Layouts
+        } else {
+            ui->maximizeButton->setProperty("hovered", false);
+            ui->maximizeButton->style()->unpolish(ui->maximizeButton);
+            ui->maximizeButton->style()->polish(ui->maximizeButton);
+            ui->maximizeButton->update();
+        }
+    }
+
+    if (msg->message == WM_NCMOUSELEAVE) {
+        ui->maximizeButton->setProperty("hovered", false);
+        ui->maximizeButton->style()->unpolish(ui->maximizeButton);
+        ui->maximizeButton->style()->polish(ui->maximizeButton);
+        ui->maximizeButton->update();
+    }
+
+    if (msg->message == WM_SIZE) {
+        // Ensure Qt layouts are updated when the native window size changes
+        this->update();
+    }
+
     return QMainWindow::nativeEvent(eventType, message, result);
 }
 #endif
 
 void MainWindow::mousePressEvent(QMouseEvent *event) {
-    if (event->button() == Qt::LeftButton) {
-        if (ui->titlebar && ui->titlebar->underMouse()) {
-            isDragging = true;
-            dragStartedMaximized = isMaximized();
-            dragPosition = event->globalPosition().toPoint() - frameGeometry().topLeft();
-            event->accept();
-            return;
-        }
-    }
     QMainWindow::mousePressEvent(event);
 }
 
 void MainWindow::mouseMoveEvent(QMouseEvent *event) {
-    if (isDragging && (event->buttons() & Qt::LeftButton)) {
-        // If we started dragging while maximized, restore the window first
-        if (dragStartedMaximized && isMaximized()) {
-            QPoint globalPos = event->globalPosition().toPoint();
-
-            // Store maximized width and calculate proportional click position
-            int maximizedWidth = width();
-            double proportionX = static_cast<double>(dragPosition.x()) / maximizedWidth;
-
-            // Restore the window
-#ifdef Q_OS_WIN
-            ShowWindow(reinterpret_cast<HWND>(winId()), SW_RESTORE);
-            // Process events to ensure geometry is updated
-            QApplication::processEvents();
-#else
-            showNormal();
-#endif
-            // Calculate new drag offset based on restored size
-            int newX = static_cast<int>(proportionX * width());
-            // Keep Y offset relative to titlebar (use a reasonable value)
-            int newY = qMin(dragPosition.y(), 20);
-            dragPosition = QPoint(newX, newY);
-
-            // Immediately position window under cursor
-            move(globalPos - dragPosition);
-
-            dragStartedMaximized = false;
-            event->accept();
-            return;
-        }
-
-        move(event->globalPosition().toPoint() - dragPosition);
-        event->accept();
-        return;
-    }
-
     QMainWindow::mouseMoveEvent(event);
 }
 
 void MainWindow::mouseReleaseEvent(QMouseEvent *event) {
-    if (event->button() == Qt::LeftButton) {
-        isDragging = false;
-        dragStartedMaximized = false;
-        event->accept();
-    }
     QMainWindow::mouseReleaseEvent(event);
 }
 
@@ -1005,7 +1012,13 @@ void MainWindow::setupQmlWidget() {
        <item>
         <spacer name="titlebarSpacer">
          <property name="orientation">
-          <enum>Qt::Horizontal</enum>
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>0</width>
+           <height>0</height>
+          </size>
          </property>
         </spacer>
        </item>
@@ -1023,8 +1036,13 @@ void MainWindow::setupQmlWidget() {
            <height>40</height>
           </size>
          </property>
+         <property name="font">
+          <font>
+           <pointsize>12</pointsize>
+          </font>
+         </property>
          <property name="text">
-          <string>&#x2212;</string>
+          <string>−</string>
          </property>
          <property name="flat">
           <bool>true</bool>
@@ -1045,8 +1063,13 @@ void MainWindow::setupQmlWidget() {
            <height>40</height>
           </size>
          </property>
+         <property name="font">
+          <font>
+           <pointsize>12</pointsize>
+          </font>
+         </property>
          <property name="text">
-          <string>&#x25A1;</string>
+          <string>□</string>
          </property>
          <property name="flat">
           <bool>true</bool>
@@ -1068,7 +1091,7 @@ void MainWindow::setupQmlWidget() {
           </size>
          </property>
          <property name="text">
-          <string>&#x2715;</string>
+          <string>✕</string>
          </property>
          <property name="flat">
           <bool>true</bool>
@@ -1117,8 +1140,6 @@ void MainWindow::setupQmlWidget() {
 QFrame#titlebar {
     background-color: #3c3f41;
     border-bottom: 1px solid #555555;
-    border-top-left-radius: 8px;
-    border-top-right-radius: 8px;
 }
 
 QFrame#titlebar QLabel {
@@ -1136,23 +1157,22 @@ QFrame#titlebar QPushButton {
 }
 
 QFrame#titlebar QPushButton#minimizeButton:hover,
-QFrame#titlebar QPushButton#maximizeButton:hover {
+QFrame#titlebar QPushButton#maximizeButton:hover,
+QFrame#titlebar QPushButton#maximizeButton[hovered="true"] {
     background-color: #505050;
 }
 
 QFrame#titlebar QPushButton#closeButton {
-    border-top-right-radius: 8px;
+    background-color: transparent;
 }
 
 QFrame#titlebar QPushButton#closeButton:hover {
     background-color: #e81123;
 }
 
-/* Main content area with rounded bottom corners */
+/* Main content area */
 QWidget#contentWidget {
     background-color: #2b2b2b;
-    border-bottom-left-radius: 8px;
-    border-bottom-right-radius: 8px;
 }
 """ else ""
 
