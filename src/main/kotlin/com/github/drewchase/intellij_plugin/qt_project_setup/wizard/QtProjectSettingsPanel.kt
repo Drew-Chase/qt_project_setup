@@ -1,5 +1,6 @@
 package com.github.drewchase.intellij_plugin.qt_project_setup.wizard
 
+import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.ui.TextFieldWithBrowseButton
@@ -21,6 +22,8 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
 
     companion object {
         private val LOG = Logger.getInstance(QtProjectSettingsPanel::class.java)
+        private const val QT_PATH_PROPERTY_KEY = "qt.project.setup.qt.path"
+        private const val DEFAULT_QT_PATH = "C:/Qt/6.8.0/mingw_64"
     }
 
     // Callback for validation - set by the wizard framework
@@ -34,7 +37,7 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
                 .withTitle("Select Qt Installation")
                 .withDescription("Choose the Qt installation directory (e.g., C:/Qt/6.8.0/mingw_64)")
         )
-        text = "C:/Qt/6.8.0/mingw_64"
+        text = PropertiesComponent.getInstance().getValue(QT_PATH_PROPERTY_KEY, DEFAULT_QT_PATH)
     }
     private val windowTitleField = JBTextField("My Application")
     private val minWidthSpinner = JSpinner(SpinnerNumberModel(800, 100, 10000, 10))
@@ -49,8 +52,13 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
 
     override fun getSettings(): QtProjectSettings {
         LOG.info("QtProjectSettingsPanel.getSettings() called")
+        val qtPath = qtPathField.text
+
+        // Cache the Qt path for future use
+        PropertiesComponent.getInstance().setValue(QT_PATH_PROPERTY_KEY, qtPath)
+
         return QtProjectSettings(
-            qtPath = qtPathField.text,
+            qtPath = qtPath,
             windowTitle = windowTitleField.text,
             minWidth = minWidthSpinner.value as Int,
             minHeight = minHeightSpinner.value as Int,
