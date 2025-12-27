@@ -1,0 +1,1355 @@
+package com.github.drewchase.intellij_plugin.qt_project_setup.generation
+
+import com.github.drewchase.intellij_plugin.qt_project_setup.wizard.QtProjectSettings
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.command.WriteCommandAction
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.vfs.VfsUtil
+import com.intellij.openapi.vfs.VirtualFile
+import java.util.concurrent.CountDownLatch
+
+object QtProjectFilesGenerator {
+
+    fun generate(project: Project, baseDir: VirtualFile, settings: QtProjectSettings) {
+        val latch = CountDownLatch(1)
+        var error: Throwable? = null
+
+        ApplicationManager.getApplication().invokeLater {
+            WriteCommandAction.runWriteCommandAction(project) {
+                try {
+            // Create directory structure
+            val ideaDir = VfsUtil.createDirectoryIfMissing(baseDir, ".idea")
+            val cmakeDir = VfsUtil.createDirectoryIfMissing(baseDir, "cmake")
+            val srcDir = VfsUtil.createDirectoryIfMissing(baseDir, "src")
+            val srcUiDir = VfsUtil.createDirectoryIfMissing(srcDir, "ui")
+            val includeDir = VfsUtil.createDirectoryIfMissing(baseDir, "include")
+            val includeUiDir = VfsUtil.createDirectoryIfMissing(includeDir, "ui")
+            val uiDir = VfsUtil.createDirectoryIfMissing(baseDir, "ui")
+            val resDir = VfsUtil.createDirectoryIfMissing(baseDir, "res")
+            val stylesDir = VfsUtil.createDirectoryIfMissing(resDir, "styles")
+            val qmlDir = VfsUtil.createDirectoryIfMissing(resDir, "qml")
+
+            val projectName = project.name
+            val projectNameUpper = projectName.uppercase().replace("-", "_").replace(" ", "_")
+            val qtPath = settings.qtPath.replace("\\", "/")
+
+            // Generate .idea/cmake.xml with Qt path
+            writeFile(ideaDir, "cmake.xml", generateCmakeXml(qtPath))
+
+            // Generate CMakeLists.txt
+            writeFile(baseDir, "CMakeLists.txt", generateCMakeLists(projectName))
+
+            // Generate cmake/QtDynamicHelpers.cmake
+            writeFile(cmakeDir, "QtDynamicHelpers.cmake", generateQtDynamicHelpers())
+
+            // Generate src/main.cpp
+            writeFile(srcDir, "main.cpp", generateMainCpp(settings))
+
+            // Generate mainwindow files based on titlebar setting
+            if (settings.useCustomTitlebar) {
+                writeFile(includeUiDir, "mainwindow.h", generateMainWindowHeaderCustom(projectNameUpper))
+                writeFile(srcUiDir, "mainwindow.cpp", generateMainWindowCppCustom())
+                writeFile(uiDir, "mainwindow.ui", generateMainWindowUiCustom(settings))
+            } else {
+                writeFile(includeUiDir, "mainwindow.h", generateMainWindowHeader(projectNameUpper))
+                writeFile(srcUiDir, "mainwindow.cpp", generateMainWindowCpp())
+                writeFile(uiDir, "mainwindow.ui", generateMainWindowUi(settings))
+            }
+
+            // Generate resources
+            writeFile(resDir, "resources.qrc", generateResourcesQrc())
+            writeFile(stylesDir, "base.qss", generateBaseQss(settings.useCustomTitlebar))
+
+            // Generate QML files
+            writeFile(qmlDir, "main.qml", generateMainQml())
+            writeFile(qmlDir, "AnimatedButton.qml", generateAnimatedButtonQml())
+                } catch (e: Throwable) {
+                    error = e
+                } finally {
+                    latch.countDown()
+                }
+            }
+        }
+
+        // Wait for the write action to complete
+        latch.await()
+        error?.let { throw it }
+    }
+
+    private fun writeFile(dir: VirtualFile?, fileName: String, content: String) {
+        dir?.let {
+            val file = dir.createChildData(this, fileName)
+            VfsUtil.saveText(file, content)
+        }
+    }
+
+    private fun generateCmakeXml(qtPath: String): String = """
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="CMakeSharedSettings">
+    <configurations>
+      <configuration PROFILE_NAME="Debug" ENABLED="true" GENERATION_DIR="bin/obj/debug" CONFIG_NAME="Debug" GENERATION_OPTIONS="-DCMAKE_PREFIX_PATH=$qtPath" />
+      <configuration PROFILE_NAME="Release" ENABLED="true" GENERATION_DIR="bin/obj/release" CONFIG_NAME="Release" GENERATION_OPTIONS="-DCMAKE_PREFIX_PATH=$qtPath" />
+    </configurations>
+  </component>
+</project>
+""".trimIndent()
+
+    private fun generateCMakeLists(projectName: String): String = """
+cmake_minimum_required(VERSION 3.20)
+project($projectName)
+
+include(cmake/QtDynamicHelpers.cmake)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+file(GLOB_RECURSE SOURCES "src/*.cpp")
+file(GLOB_RECURSE HEADERS "include/*.h")
+file(GLOB_RECURSE UI "ui/*.ui")
+
+add_executable(${"$"}{CMAKE_PROJECT_NAME}
+    ${"$"}{SOURCES}
+    ${"$"}{HEADERS}
+    ${"$"}{UI}
+    res/resources.qrc
+)
+
+target_include_directories(${"$"}{CMAKE_PROJECT_NAME} PRIVATE include)
+
+set_target_properties(${"$"}{CMAKE_PROJECT_NAME} PROPERTIES
+    AUTOUIC ON
+    AUTOUIC_SEARCH_PATHS "${"$"}{PROJECT_SOURCE_DIR}/ui"
+)
+
+# Link Windows libraries for custom titlebar support
+if(WIN32)
+    target_link_libraries(${"$"}{CMAKE_PROJECT_NAME} PRIVATE dwmapi)
+endif()
+
+configure_qt_dynamic_target(${"$"}{CMAKE_PROJECT_NAME}
+    Widgets
+    Gui
+    Quick
+    Qml
+    QuickWidgets
+    QuickControls2
+)
+""".trimIndent()
+
+    private fun generateQtDynamicHelpers(): String = """
+# QtDynamicHelpers.cmake
+#
+# A module to simplify the creation of dynamically linked Qt6 applications.
+# Usage: configure_qt_dynamic_target(target_name Module1 Module2 ...)
+
+message(STATUS "QtDynamicHelpers module loaded.")
+
+# Use CMAKE_SOURCE_DIR to break out of the "obj" build folder
+set(OUTPUT_BASE_DIR "${"$"}{CMAKE_SOURCE_DIR}/bin")
+if (MSVC)
+    # MSVC appends /Debug or /Release automatically
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${"$"}{OUTPUT_BASE_DIR}")
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${"$"}{OUTPUT_BASE_DIR}")
+    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${"$"}{OUTPUT_BASE_DIR}")
+else ()
+    string(TOLOWER "${"$"}{CMAKE_BUILD_TYPE}" BUILD_TYPE_LOWER)
+    if (NOT BUILD_TYPE_LOWER)
+        set(BUILD_TYPE_LOWER "debug")
+    endif ()
+
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${"$"}{OUTPUT_BASE_DIR}/${"$"}{BUILD_TYPE_LOWER}")
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${"$"}{OUTPUT_BASE_DIR}/${"$"}{BUILD_TYPE_LOWER}")
+    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${"$"}{OUTPUT_BASE_DIR}/${"$"}{BUILD_TYPE_LOWER}")
+endif ()
+
+function(configure_qt_dynamic_target TARGET_NAME)
+    if(NOT TARGET_NAME)
+        message(FATAL_ERROR "configure_qt_dynamic_target() requires a TARGET_NAME.")
+    endif()
+
+    set(QT_MODULES ${"$"}{ARGN})
+    if(NOT QT_MODULES)
+        message(WARNING "No Qt modules specified. Defaulting to Widgets.")
+        set(QT_MODULES Widgets)
+    endif()
+
+    # Build dependency list (some modules have implicit dependencies)
+    set(ALL_MODULES ${"$"}{QT_MODULES})
+
+    # Widgets requires Gui
+    if("Widgets" IN_LIST ALL_MODULES AND NOT "Gui" IN_LIST ALL_MODULES)
+        list(APPEND ALL_MODULES "Gui")
+    endif()
+
+    # Quick/Qml dependencies
+    if("Quick" IN_LIST ALL_MODULES OR "QuickWidgets" IN_LIST ALL_MODULES)
+        if(NOT "Qml" IN_LIST ALL_MODULES)
+            list(APPEND ALL_MODULES "Qml")
+        endif()
+        if(NOT "Gui" IN_LIST ALL_MODULES)
+            list(APPEND ALL_MODULES "Gui")
+        endif()
+    endif()
+
+    # All modules require Core
+    if(NOT "Core" IN_LIST ALL_MODULES)
+        list(APPEND ALL_MODULES "Core")
+    endif()
+
+    message(STATUS "Configuring Qt build for target: ${"$"}{TARGET_NAME}")
+    message(STATUS "  - Qt Modules: ${"$"}{ALL_MODULES}")
+
+    # Find and link Qt packages
+    find_package(Qt6 COMPONENTS ${"$"}{ALL_MODULES} REQUIRED)
+
+    set(QT_LIBS "")
+    foreach(MOD ${"$"}{ALL_MODULES})
+        list(APPEND QT_LIBS "Qt6::${"$"}{MOD}")
+    endforeach()
+
+    target_link_libraries(${"$"}{TARGET_NAME} PRIVATE ${"$"}{QT_LIBS})
+
+    # Enable AUTO features
+    set_target_properties(${"$"}{TARGET_NAME} PROPERTIES
+        AUTOMOC ON
+        AUTORCC ON
+        AUTOUIC ON
+    )
+
+    # Windows-specific: Hide console in Release
+    if(WIN32)
+        set_target_properties(${"$"}{TARGET_NAME} PROPERTIES
+            WIN32_EXECUTABLE ${"$"}<${"$"}<CONFIG:Release>:TRUE>
+        )
+    endif()
+
+    # Windows DLL deployment
+    if(WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+        set(DEBUG_SUFFIX)
+        if(MSVC AND CMAKE_BUILD_TYPE MATCHES "Debug")
+            set(DEBUG_SUFFIX "d")
+        endif()
+
+        # Find Qt installation path from CMAKE_PREFIX_PATH
+        set(QT_INSTALL_PATH "${"$"}{CMAKE_PREFIX_PATH}")
+        if(NOT EXISTS "${"$"}{QT_INSTALL_PATH}/bin")
+            set(QT_INSTALL_PATH "${"$"}{QT_INSTALL_PATH}/..")
+            if(NOT EXISTS "${"$"}{QT_INSTALL_PATH}/bin")
+                set(QT_INSTALL_PATH "${"$"}{QT_INSTALL_PATH}/..")
+            endif()
+        endif()
+
+        message(STATUS "Qt install path: ${"$"}{QT_INSTALL_PATH}")
+
+        # Copy platform plugin (required for any Qt GUI app)
+        # Qt looks for plugins in <exe_dir>/platforms/ by default
+        if(EXISTS "${"$"}{QT_INSTALL_PATH}/plugins/platforms/qwindows${"$"}{DEBUG_SUFFIX}.dll")
+            add_custom_command(TARGET ${"$"}{TARGET_NAME} POST_BUILD
+                COMMAND ${"$"}{CMAKE_COMMAND} -E make_directory
+                    "${"$"}<TARGET_FILE_DIR:${"$"}{TARGET_NAME}>/platforms/")
+            add_custom_command(TARGET ${"$"}{TARGET_NAME} POST_BUILD
+                COMMAND ${"$"}{CMAKE_COMMAND} -E copy
+                    "${"$"}{QT_INSTALL_PATH}/plugins/platforms/qwindows${"$"}{DEBUG_SUFFIX}.dll"
+                    "${"$"}<TARGET_FILE_DIR:${"$"}{TARGET_NAME}>/platforms/")
+        endif()
+
+        # Copy styles plugin (for native look)
+        if(EXISTS "${"$"}{QT_INSTALL_PATH}/plugins/styles")
+            add_custom_command(TARGET ${"$"}{TARGET_NAME} POST_BUILD
+                COMMAND ${"$"}{CMAKE_COMMAND} -E make_directory
+                    "${"$"}<TARGET_FILE_DIR:${"$"}{TARGET_NAME}>/styles/")
+            add_custom_command(TARGET ${"$"}{TARGET_NAME} POST_BUILD
+                COMMAND ${"$"}{CMAKE_COMMAND} -E copy_directory
+                    "${"$"}{QT_INSTALL_PATH}/plugins/styles"
+                    "${"$"}<TARGET_FILE_DIR:${"$"}{TARGET_NAME}>/styles/")
+        endif()
+
+        # Copy imageformats plugins
+        if(EXISTS "${"$"}{QT_INSTALL_PATH}/plugins/imageformats")
+            add_custom_command(TARGET ${"$"}{TARGET_NAME} POST_BUILD
+                COMMAND ${"$"}{CMAKE_COMMAND} -E make_directory
+                    "${"$"}<TARGET_FILE_DIR:${"$"}{TARGET_NAME}>/imageformats/")
+            add_custom_command(TARGET ${"$"}{TARGET_NAME} POST_BUILD
+                COMMAND ${"$"}{CMAKE_COMMAND} -E copy_directory
+                    "${"$"}{QT_INSTALL_PATH}/plugins/imageformats"
+                    "${"$"}<TARGET_FILE_DIR:${"$"}{TARGET_NAME}>/imageformats/")
+        endif()
+
+        # Copy Qt DLLs for each module
+        foreach(QT_LIB ${"$"}{ALL_MODULES})
+            set(DLL_PATH "${"$"}{QT_INSTALL_PATH}/bin/Qt6${"$"}{QT_LIB}${"$"}{DEBUG_SUFFIX}.dll")
+            if(EXISTS "${"$"}{DLL_PATH}")
+                add_custom_command(TARGET ${"$"}{TARGET_NAME} POST_BUILD
+                    COMMAND ${"$"}{CMAKE_COMMAND} -E copy
+                        "${"$"}{DLL_PATH}"
+                        "${"$"}<TARGET_FILE_DIR:${"$"}{TARGET_NAME}>")
+            endif()
+        endforeach()
+
+        # Copy MinGW runtime DLLs (required for MinGW builds)
+        if(MINGW)
+            set(MINGW_RUNTIME_DLLS
+                "libgcc_s_seh-1.dll"
+                "libstdc++-6.dll"
+                "libwinpthread-1.dll"
+            )
+            foreach(DLL_NAME ${"$"}{MINGW_RUNTIME_DLLS})
+                set(DLL_PATH "${"$"}{QT_INSTALL_PATH}/bin/${"$"}{DLL_NAME}")
+                if(EXISTS "${"$"}{DLL_PATH}")
+                    add_custom_command(TARGET ${"$"}{TARGET_NAME} POST_BUILD
+                        COMMAND ${"$"}{CMAKE_COMMAND} -E copy
+                            "${"$"}{DLL_PATH}"
+                            "${"$"}<TARGET_FILE_DIR:${"$"}{TARGET_NAME}>")
+                endif()
+            endforeach()
+        endif()
+
+        # Copy QML runtime if using Quick/Qml
+        if("Qml" IN_LIST ALL_MODULES OR "Quick" IN_LIST ALL_MODULES)
+            # Additional QML-related DLLs (including hidden runtime dependencies)
+            set(QML_EXTRA_DLLS
+                "Qt6QmlModels"
+                "Qt6QmlWorkerScript"
+                "Qt6QmlCore"
+                "Qt6QmlMeta"
+                "Qt6QmlNetwork"
+                "Qt6QuickTemplates2"
+                "Qt6QuickLayouts"
+                "Qt6QuickControls2"
+                "Qt6QuickControls2Impl"
+                "Qt6QuickControls2Basic"
+                "Qt6QuickControls2BasicStyleImpl"
+                "Qt6QuickControls2Fusion"
+                "Qt6QuickControls2FusionStyleImpl"
+                "Qt6QuickControls2Material"
+                "Qt6QuickControls2MaterialStyleImpl"
+                "Qt6QuickControls2Universal"
+                "Qt6QuickControls2UniversalStyleImpl"
+                "Qt6QuickControls2Imagine"
+                "Qt6QuickControls2ImagineStyleImpl"
+                "Qt6QmlLocalStorage"
+                "Qt6QmlXmlListModel"
+                "Qt6Network"
+                "Qt6OpenGL"
+                "Qt6ShaderTools"
+                "Qt6Svg"
+            )
+            foreach(DLL_NAME ${"$"}{QML_EXTRA_DLLS})
+                set(DLL_PATH "${"$"}{QT_INSTALL_PATH}/bin/${"$"}{DLL_NAME}${"$"}{DEBUG_SUFFIX}.dll")
+                if(EXISTS "${"$"}{DLL_PATH}")
+                    add_custom_command(TARGET ${"$"}{TARGET_NAME} POST_BUILD
+                        COMMAND ${"$"}{CMAKE_COMMAND} -E copy
+                            "${"$"}{DLL_PATH}"
+                            "${"$"}<TARGET_FILE_DIR:${"$"}{TARGET_NAME}>")
+                endif()
+            endforeach()
+
+            # Copy QML modules
+            if(EXISTS "${"$"}{QT_INSTALL_PATH}/qml")
+                add_custom_command(TARGET ${"$"}{TARGET_NAME} POST_BUILD
+                    COMMAND ${"$"}{CMAKE_COMMAND} -E copy_directory
+                        "${"$"}{QT_INSTALL_PATH}/qml"
+                        "${"$"}<TARGET_FILE_DIR:${"$"}{TARGET_NAME}>/qml")
+            endif()
+
+            # Create qt.conf to help Qt find plugins in subdirectories
+            file(WRITE "${"$"}{CMAKE_BINARY_DIR}/qt.conf" "[Paths]\nPlugins = .\nQml2Imports = ./qml\n")
+            add_custom_command(TARGET ${"$"}{TARGET_NAME} POST_BUILD
+                COMMAND ${"$"}{CMAKE_COMMAND} -E copy
+                    "${"$"}{CMAKE_BINARY_DIR}/qt.conf"
+                    "${"$"}<TARGET_FILE_DIR:${"$"}{TARGET_NAME}>/qt.conf")
+        endif()
+    endif()
+
+    message(STATUS "Configuration for ${"$"}{TARGET_NAME} complete.")
+endfunction()
+""".trimIndent()
+
+    private fun generateMainCpp(settings: QtProjectSettings): String = """
+#include <QApplication>
+#include <QQmlApplicationEngine>
+#include <QQuickStyle>
+#include <QDir>
+#include <QFileInfo>
+#include "ui/mainwindow.h"
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <string>
+#include <cstdlib>
+#endif
+
+int main(int argc, char *argv[]) {
+#ifdef Q_OS_WIN
+    // Add application directory to DLL search path for QML plugins
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    std::wstring exeDir(exePath);
+    exeDir = exeDir.substr(0, exeDir.find_last_of(L"\\/"));
+
+    // Prepend exe directory to PATH so QML plugins can find Qt DLLs
+    wchar_t currentPath[32767];
+    GetEnvironmentVariableW(L"PATH", currentPath, 32767);
+    std::wstring newPath = exeDir + L";" + currentPath;
+    SetEnvironmentVariableW(L"PATH", newPath.c_str());
+
+    // Also use AddDllDirectory for modern Windows DLL loading
+    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    AddDllDirectory(exeDir.c_str());
+#endif
+
+    QApplication app(argc, argv);
+
+    // Set the Quick Controls style
+    QQuickStyle::setStyle("Fusion");
+
+    // Create and show the main window
+    MainWindow window;
+    window.show();
+
+    return QApplication::exec();
+}
+""".trimIndent()
+
+    private fun generateMainWindowHeader(projectNameUpper: String): String = """
+#pragma once
+
+#ifndef ${projectNameUpper}_MAINWINDOW_H
+#define ${projectNameUpper}_MAINWINDOW_H
+
+#include <QMainWindow>
+#include <QQuickWidget>
+
+QT_BEGIN_NAMESPACE
+namespace Ui {
+    class MainWindow;
+}
+QT_END_NAMESPACE
+
+class MainWindow : public QMainWindow {
+    Q_OBJECT
+
+public:
+    explicit MainWindow(QWidget *parent = nullptr);
+    ~MainWindow() override;
+
+private:
+    Ui::MainWindow *ui;
+    QQuickWidget *qmlWidget;
+    void loadStyleSheet();
+    void setupQmlWidget();
+};
+
+#endif // ${projectNameUpper}_MAINWINDOW_H
+""".trimIndent()
+
+    private fun generateMainWindowHeaderCustom(projectNameUpper: String): String = """
+#pragma once
+
+#ifndef ${projectNameUpper}_MAINWINDOW_H
+#define ${projectNameUpper}_MAINWINDOW_H
+
+#include <QMainWindow>
+#include <QPoint>
+#include <QQuickWidget>
+
+QT_BEGIN_NAMESPACE
+namespace Ui {
+    class MainWindow;
+}
+QT_END_NAMESPACE
+
+class MainWindow : public QMainWindow {
+    Q_OBJECT
+
+public:
+    explicit MainWindow(QWidget *parent = nullptr);
+    ~MainWindow() override;
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
+    bool eventFilter(QObject *obj, QEvent *event) override;
+#ifdef Q_OS_WIN
+    bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;
+#endif
+
+private slots:
+    void toggleMaximize();
+
+private:
+    bool isDragging = false;
+    bool dragStartedMaximized = false;
+    bool isMaxButtonPressed = false;
+    QPoint dragPosition;
+
+    Ui::MainWindow *ui;
+    QQuickWidget *qmlWidget;
+    void loadStyleSheet();
+    void setupQmlWidget();
+    void setupWindowEffects();
+    void installEventFilterRecursive(QWidget *widget);
+
+    static constexpr int RESIZE_BORDER = 8;
+};
+
+#endif // ${projectNameUpper}_MAINWINDOW_H
+""".trimIndent()
+
+    private fun generateMainWindowCpp(): String = """
+#include "ui/mainwindow.h"
+#include "ui_mainwindow.h"
+#include <QFile>
+#include <QTextStream>
+#include <QVBoxLayout>
+
+MainWindow::MainWindow(QWidget *parent)
+    : QMainWindow(parent)
+    , ui(new Ui::MainWindow)
+    , qmlWidget(nullptr)
+{
+    ui->setupUi(this);
+    loadStyleSheet();
+    setupQmlWidget();
+}
+
+MainWindow::~MainWindow() {
+    delete ui;
+}
+
+void MainWindow::loadStyleSheet() {
+    QFile styleSheet(":/styles/base.qss");
+    if (styleSheet.open(QFile::ReadOnly | QFile::Text)) {
+        QTextStream stream(&styleSheet);
+        this->setStyleSheet(stream.readAll());
+        styleSheet.close();
+    }
+}
+
+void MainWindow::setupQmlWidget() {
+    qmlWidget = new QQuickWidget(this);
+    qmlWidget->setResizeMode(QQuickWidget::SizeRootObjectToView);
+    qmlWidget->setSource(QUrl("qrc:/qml/main.qml"));
+
+    // Add to the content widget
+    if (ui->contentWidget->layout()) {
+        ui->contentWidget->layout()->addWidget(qmlWidget);
+    } else {
+        QVBoxLayout *layout = new QVBoxLayout(ui->contentWidget);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->addWidget(qmlWidget);
+    }
+}
+""".trimIndent()
+
+    private fun generateMainWindowCppCustom(): String = """
+#include "ui/mainwindow.h"
+#include "ui_mainwindow.h"
+#include <QFile>
+#include <QTextStream>
+#include <QMouseEvent>
+#include <QVBoxLayout>
+#include <QScreen>
+#include <QApplication>
+#include <QEvent>
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <windowsx.h>
+#include <dwmapi.h>
+
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+#ifndef DWMWCP_ROUND
+#define DWMWCP_ROUND 2
+#endif
+#endif
+
+MainWindow::MainWindow(QWidget *parent)
+    : QMainWindow(parent)
+    , ui(new Ui::MainWindow)
+    , qmlWidget(nullptr)
+    , resizeEdge(None)
+{
+#ifdef Q_OS_WIN
+    setWindowFlags(Qt::FramelessWindowHint | Qt::WindowSystemMenuHint |
+                   Qt::WindowMinimizeButtonHint | Qt::WindowMaximizeButtonHint);
+#endif
+
+    ui->setupUi(this);
+
+    // Enable mouse tracking for resize cursor updates
+    setMouseTracking(true);
+    centralWidget()->setMouseTracking(true);
+
+    // Install event filter on all child widgets to catch mouse moves
+    installEventFilterRecursive(this);
+
+    loadStyleSheet();
+    setupQmlWidget();
+    setupWindowEffects();
+
+#ifdef Q_OS_WIN
+    connect(ui->closeButton, &QPushButton::clicked, this, &MainWindow::close);
+    connect(ui->minimizeButton, &QPushButton::clicked, this, [this]() {
+        ShowWindow(reinterpret_cast<HWND>(winId()), SW_MINIMIZE);
+    });
+    connect(ui->maximizeButton, &QPushButton::clicked, this, &MainWindow::toggleMaximize);
+#endif
+}
+
+MainWindow::~MainWindow() {
+    delete ui;
+}
+
+void MainWindow::toggleMaximize() {
+#ifdef Q_OS_WIN
+    HWND hwnd = reinterpret_cast<HWND>(winId());
+    if (isMaximized()) {
+        ShowWindow(hwnd, SW_RESTORE);
+    } else {
+        ShowWindow(hwnd, SW_MAXIMIZE);
+    }
+#else
+    if (isMaximized()) {
+        showNormal();
+    } else {
+        showMaximized();
+    }
+#endif
+}
+
+void MainWindow::setupWindowEffects() {
+#ifdef Q_OS_WIN
+    HWND hwnd = reinterpret_cast<HWND>(winId());
+
+    // Enable rounded corners on Windows 11+
+    int preference = DWMWCP_ROUND;
+    DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &preference, sizeof(preference));
+
+    // Extend frame into client area to get shadow
+    MARGINS margins = {1, 1, 1, 1};
+    DwmExtendFrameIntoClientArea(hwnd, &margins);
+#endif
+}
+
+void MainWindow::installEventFilterRecursive(QWidget *widget) {
+    if (!widget) return;
+
+    widget->setMouseTracking(true);
+    widget->installEventFilter(this);
+
+    for (QObject *child : widget->children()) {
+        if (QWidget *childWidget = qobject_cast<QWidget*>(child)) {
+            installEventFilterRecursive(childWidget);
+        }
+    }
+}
+
+bool MainWindow::eventFilter(QObject *obj, QEvent *event) {
+    // Event filter kept for potential future use
+    return QMainWindow::eventFilter(obj, event);
+}
+
+#ifdef Q_OS_WIN
+bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result) {
+    MSG *msg = static_cast<MSG *>(message);
+
+    if (msg->message == WM_NCCALCSIZE) {
+        if (msg->wParam == TRUE) {
+            *result = 0;
+            return true;
+        }
+    }
+
+    // Handle hit testing for resize edges and maximize button
+    if (msg->message == WM_NCHITTEST) {
+        POINT pt = {GET_X_LPARAM(msg->lParam), GET_Y_LPARAM(msg->lParam)};
+        ScreenToClient(msg->hwnd, &pt);
+
+        // Check if over maximize button - return HTMAXBUTTON for Snap Layouts
+        if (ui->maximizeButton) {
+            QPoint btnPos = ui->maximizeButton->mapFrom(this, QPoint(pt.x, pt.y));
+            if (ui->maximizeButton->rect().contains(btnPos)) {
+                *result = HTMAXBUTTON;
+                return true;
+            }
+        }
+
+        // Handle resize edges (only when not maximized)
+        if (!isMaximized()) {
+            int x = pt.x;
+            int y = pt.y;
+            int w = width();
+            int h = height();
+
+            bool left = x < RESIZE_BORDER;
+            bool right = x >= w - RESIZE_BORDER;
+            bool top = y < RESIZE_BORDER;
+            bool bottom = y >= h - RESIZE_BORDER;
+
+            if (left && top) {
+                *result = HTTOPLEFT;
+                return true;
+            }
+            if (right && top) {
+                *result = HTTOPRIGHT;
+                return true;
+            }
+            if (left && bottom) {
+                *result = HTBOTTOMLEFT;
+                return true;
+            }
+            if (right && bottom) {
+                *result = HTBOTTOMRIGHT;
+                return true;
+            }
+            if (left) {
+                *result = HTLEFT;
+                return true;
+            }
+            if (right) {
+                *result = HTRIGHT;
+                return true;
+            }
+            if (top) {
+                *result = HTTOP;
+                return true;
+            }
+            if (bottom) {
+                *result = HTBOTTOM;
+                return true;
+            }
+        }
+    }
+
+    if (msg->message == WM_GETMINMAXINFO) {
+        MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(msg->lParam);
+
+        HMONITOR hMonitor = MonitorFromWindow(msg->hwnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi;
+        mi.cbSize = sizeof(mi);
+        GetMonitorInfo(hMonitor, &mi);
+
+        // Set maximum size and position for maximized state
+        mmi->ptMaxPosition.x = mi.rcWork.left - mi.rcMonitor.left;
+        mmi->ptMaxPosition.y = mi.rcWork.top - mi.rcMonitor.top;
+        mmi->ptMaxSize.x = mi.rcWork.right - mi.rcWork.left;
+        mmi->ptMaxSize.y = mi.rcWork.bottom - mi.rcWork.top;
+
+        // Set minimum tracking size from Qt's minimumSize
+        mmi->ptMinTrackSize.x = minimumWidth();
+        mmi->ptMinTrackSize.y = minimumHeight();
+
+        *result = 0;
+        return true;
+    }
+
+    // Handle maximize button click for Snap Layouts
+    if (msg->message == WM_NCLBUTTONDOWN) {
+        if (msg->wParam == HTMAXBUTTON) {
+            isMaxButtonPressed = true;
+            *result = 0;
+            return true;
+        }
+    }
+
+    if (msg->message == WM_NCLBUTTONUP) {
+        if (msg->wParam == HTMAXBUTTON && isMaxButtonPressed) {
+            isMaxButtonPressed = false;
+            toggleMaximize();
+            *result = 0;
+            return true;
+        }
+        isMaxButtonPressed = false;
+    }
+
+    return QMainWindow::nativeEvent(eventType, message, result);
+}
+#endif
+
+void MainWindow::mousePressEvent(QMouseEvent *event) {
+    if (event->button() == Qt::LeftButton) {
+        if (ui->titlebar && ui->titlebar->underMouse()) {
+            isDragging = true;
+            dragStartedMaximized = isMaximized();
+            dragPosition = event->globalPosition().toPoint() - frameGeometry().topLeft();
+            event->accept();
+            return;
+        }
+    }
+    QMainWindow::mousePressEvent(event);
+}
+
+void MainWindow::mouseMoveEvent(QMouseEvent *event) {
+    if (isDragging && (event->buttons() & Qt::LeftButton)) {
+        // If we started dragging while maximized, restore the window first
+        if (dragStartedMaximized && isMaximized()) {
+            QPoint globalPos = event->globalPosition().toPoint();
+
+            // Store maximized width and calculate proportional click position
+            int maximizedWidth = width();
+            double proportionX = static_cast<double>(dragPosition.x()) / maximizedWidth;
+
+            // Restore the window
+#ifdef Q_OS_WIN
+            ShowWindow(reinterpret_cast<HWND>(winId()), SW_RESTORE);
+            // Process events to ensure geometry is updated
+            QApplication::processEvents();
+#else
+            showNormal();
+#endif
+            // Calculate new drag offset based on restored size
+            int newX = static_cast<int>(proportionX * width());
+            // Keep Y offset relative to titlebar (use a reasonable value)
+            int newY = qMin(dragPosition.y(), 20);
+            dragPosition = QPoint(newX, newY);
+
+            // Immediately position window under cursor
+            move(globalPos - dragPosition);
+
+            dragStartedMaximized = false;
+            event->accept();
+            return;
+        }
+
+        move(event->globalPosition().toPoint() - dragPosition);
+        event->accept();
+        return;
+    }
+
+    QMainWindow::mouseMoveEvent(event);
+}
+
+void MainWindow::mouseReleaseEvent(QMouseEvent *event) {
+    if (event->button() == Qt::LeftButton) {
+        isDragging = false;
+        dragStartedMaximized = false;
+        event->accept();
+    }
+    QMainWindow::mouseReleaseEvent(event);
+}
+
+void MainWindow::mouseDoubleClickEvent(QMouseEvent *event) {
+    if (event->button() == Qt::LeftButton && ui->titlebar && ui->titlebar->underMouse()) {
+        toggleMaximize();
+        event->accept();
+        return;
+    }
+    QMainWindow::mouseDoubleClickEvent(event);
+}
+
+void MainWindow::loadStyleSheet() {
+    QFile styleSheet(":/styles/base.qss");
+    if (styleSheet.open(QFile::ReadOnly | QFile::Text)) {
+        QTextStream stream(&styleSheet);
+        this->setStyleSheet(stream.readAll());
+        styleSheet.close();
+    }
+}
+
+void MainWindow::setupQmlWidget() {
+    qmlWidget = new QQuickWidget(this);
+    qmlWidget->setResizeMode(QQuickWidget::SizeRootObjectToView);
+    qmlWidget->setSource(QUrl("qrc:/qml/main.qml"));
+
+    // Install event filter for cursor updates
+    installEventFilterRecursive(qmlWidget);
+
+    if (ui->contentWidget->layout()) {
+        ui->contentWidget->layout()->addWidget(qmlWidget);
+    } else {
+        QVBoxLayout *layout = new QVBoxLayout(ui->contentWidget);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->addWidget(qmlWidget);
+    }
+}
+""".trimIndent()
+
+    private fun generateMainWindowUi(settings: QtProjectSettings): String = """
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>${settings.startupWidth}</width>
+    <height>${settings.startupHeight}</height>
+   </rect>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>${settings.minWidth}</width>
+    <height>${settings.minHeight}</height>
+   </size>
+  </property>
+  <property name="windowTitle">
+   <string>${settings.windowTitle}</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="verticalLayout">
+    <property name="spacing">
+     <number>0</number>
+    </property>
+    <property name="leftMargin">
+     <number>0</number>
+    </property>
+    <property name="topMargin">
+     <number>0</number>
+    </property>
+    <property name="rightMargin">
+     <number>0</number>
+    </property>
+    <property name="bottomMargin">
+     <number>0</number>
+    </property>
+    <item>
+     <widget class="QWidget" name="contentWidget" native="true">
+      <property name="sizePolicy">
+       <sizepolicy hsizetype="Preferred" vsizetype="Expanding">
+        <horstretch>0</horstretch>
+        <verstretch>1</verstretch>
+       </sizepolicy>
+      </property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+ </widget>
+ <resources>
+  <include location="../res/resources.qrc"/>
+ </resources>
+ <connections/>
+</ui>
+""".trimIndent()
+
+    private fun generateMainWindowUiCustom(settings: QtProjectSettings): String = """
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>${settings.startupWidth}</width>
+    <height>${settings.startupHeight}</height>
+   </rect>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>${settings.minWidth}</width>
+    <height>${settings.minHeight}</height>
+   </size>
+  </property>
+  <property name="windowTitle">
+   <string>${settings.windowTitle}</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="verticalLayout">
+    <property name="spacing">
+     <number>0</number>
+    </property>
+    <property name="leftMargin">
+     <number>0</number>
+    </property>
+    <property name="topMargin">
+     <number>0</number>
+    </property>
+    <property name="rightMargin">
+     <number>0</number>
+    </property>
+    <property name="bottomMargin">
+     <number>0</number>
+    </property>
+    <item>
+     <widget class="QFrame" name="titlebar">
+      <property name="minimumSize">
+       <size>
+        <width>0</width>
+        <height>40</height>
+       </size>
+      </property>
+      <property name="maximumSize">
+       <size>
+        <width>16777215</width>
+        <height>40</height>
+       </size>
+      </property>
+      <layout class="QHBoxLayout" name="titlebarLayout">
+       <property name="leftMargin">
+        <number>10</number>
+       </property>
+       <property name="topMargin">
+        <number>0</number>
+       </property>
+       <property name="rightMargin">
+        <number>0</number>
+       </property>
+       <property name="bottomMargin">
+        <number>0</number>
+       </property>
+       <item>
+        <widget class="QLabel" name="titleLabel">
+         <property name="text">
+          <string>${settings.windowTitle}</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="titlebarSpacer">
+         <property name="orientation">
+          <enum>Qt::Horizontal</enum>
+         </property>
+        </spacer>
+       </item>
+       <item>
+        <widget class="QPushButton" name="minimizeButton">
+         <property name="minimumSize">
+          <size>
+           <width>48</width>
+           <height>40</height>
+          </size>
+         </property>
+         <property name="maximumSize">
+          <size>
+           <width>48</width>
+           <height>40</height>
+          </size>
+         </property>
+         <property name="text">
+          <string>&#x2212;</string>
+         </property>
+         <property name="flat">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="maximizeButton">
+         <property name="minimumSize">
+          <size>
+           <width>48</width>
+           <height>40</height>
+          </size>
+         </property>
+         <property name="maximumSize">
+          <size>
+           <width>48</width>
+           <height>40</height>
+          </size>
+         </property>
+         <property name="text">
+          <string>&#x25A1;</string>
+         </property>
+         <property name="flat">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="closeButton">
+         <property name="minimumSize">
+          <size>
+           <width>48</width>
+           <height>40</height>
+          </size>
+         </property>
+         <property name="maximumSize">
+          <size>
+           <width>48</width>
+           <height>40</height>
+          </size>
+         </property>
+         <property name="text">
+          <string>&#x2715;</string>
+         </property>
+         <property name="flat">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <widget class="QWidget" name="contentWidget" native="true">
+      <property name="sizePolicy">
+       <sizepolicy hsizetype="Preferred" vsizetype="Expanding">
+        <horstretch>0</horstretch>
+        <verstretch>1</verstretch>
+       </sizepolicy>
+      </property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+ </widget>
+ <resources>
+  <include location="../res/resources.qrc"/>
+ </resources>
+ <connections/>
+</ui>
+""".trimIndent()
+
+    private fun generateResourcesQrc(): String = """
+<RCC>
+  <qresource prefix="/">
+    <file>styles/base.qss</file>
+  </qresource>
+  <qresource prefix="/">
+    <file>qml/main.qml</file>
+    <file>qml/AnimatedButton.qml</file>
+  </qresource>
+</RCC>
+""".trimIndent()
+
+    private fun generateBaseQss(useCustomTitlebar: Boolean): String {
+        val titlebarStyles = if (useCustomTitlebar) """
+
+/* Custom Titlebar Styles */
+QFrame#titlebar {
+    background-color: #3c3f41;
+    border-bottom: 1px solid #555555;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+}
+
+QFrame#titlebar QLabel {
+    color: #ffffff;
+    font-weight: bold;
+    font-size: 14px;
+}
+
+QFrame#titlebar QPushButton {
+    background-color: transparent;
+    border: none;
+    color: #ffffff;
+    font-weight: bold;
+    border-radius: 0px;
+}
+
+QFrame#titlebar QPushButton#minimizeButton:hover,
+QFrame#titlebar QPushButton#maximizeButton:hover {
+    background-color: #505050;
+}
+
+QFrame#titlebar QPushButton#closeButton {
+    border-top-right-radius: 8px;
+}
+
+QFrame#titlebar QPushButton#closeButton:hover {
+    background-color: #e81123;
+}
+
+/* Main content area with rounded bottom corners */
+QWidget#contentWidget {
+    background-color: #2b2b2b;
+    border-bottom-left-radius: 8px;
+    border-bottom-right-radius: 8px;
+}
+""" else ""
+
+        return """
+/* Base Stylesheet */
+
+QMainWindow {
+    background-color: #2b2b2b;
+    color: #ffffff;
+}
+
+QWidget#centralwidget {
+    background-color: #2b2b2b;
+}
+
+QWidget#contentWidget {
+    background-color: #2b2b2b;
+}
+$titlebarStyles
+QPushButton {
+    background-color: #3c3f41;
+    color: #ffffff;
+    border: 1px solid #555555;
+    padding: 8px 16px;
+    border-radius: 4px;
+}
+
+QPushButton:hover {
+    background-color: #4a4d50;
+}
+
+QPushButton:pressed {
+    background-color: #2b2b2b;
+}
+
+QLabel {
+    color: #ffffff;
+}
+""".trimIndent()
+    }
+
+    private fun generateMainQml(): String = """
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+
+Rectangle {
+    id: root
+    color: "#2b2b2b"
+
+    ColumnLayout {
+        anchors.centerIn: parent
+        spacing: 20
+
+        Text {
+            Layout.alignment: Qt.AlignHCenter
+            text: "Welcome to your Qt Application"
+            color: "#ffffff"
+            font.pixelSize: 24
+            font.bold: true
+        }
+
+        Text {
+            Layout.alignment: Qt.AlignHCenter
+            text: "Click the animated button below!"
+            color: "#aaaaaa"
+            font.pixelSize: 14
+        }
+
+        AnimatedButton {
+            Layout.alignment: Qt.AlignHCenter
+            text: "Click Me!"
+            onClicked: {
+                clickCount++
+                statusText.text = "Clicked " + clickCount + " time" + (clickCount > 1 ? "s" : "")
+            }
+
+            property int clickCount: 0
+        }
+
+        Text {
+            id: statusText
+            Layout.alignment: Qt.AlignHCenter
+            text: "Ready"
+            color: "#888888"
+            font.pixelSize: 12
+        }
+    }
+}
+""".trimIndent()
+
+    private fun generateAnimatedButtonQml(): String = """
+import QtQuick
+import QtQuick.Controls
+
+Button {
+    id: root
+
+    property color baseColor: "#4a90d9"
+    property color hoverColor: "#5da3ec"
+    property color pressedColor: "#3d7fc8"
+
+    implicitWidth: 160
+    implicitHeight: 50
+
+    background: Rectangle {
+        id: buttonBackground
+        radius: 8
+        color: root.pressed ? root.pressedColor : (root.hovered ? root.hoverColor : root.baseColor)
+
+        // Glow effect
+        Rectangle {
+            id: glowEffect
+            anchors.fill: parent
+            radius: parent.radius
+            color: "transparent"
+            border.color: "#ffffff"
+            border.width: 2
+            opacity: 0
+        }
+
+        // Pulse animation
+        SequentialAnimation {
+            id: pulseAnimation
+            running: true
+            loops: Animation.Infinite
+
+            PropertyAnimation {
+                target: buttonBackground
+                property: "scale"
+                from: 1.0
+                to: 1.05
+                duration: 1000
+                easing.type: Easing.InOutQuad
+            }
+            PropertyAnimation {
+                target: buttonBackground
+                property: "scale"
+                from: 1.05
+                to: 1.0
+                duration: 1000
+                easing.type: Easing.InOutQuad
+            }
+        }
+
+        // Glow animation on hover
+        states: State {
+            name: "hovered"
+            when: root.hovered
+            PropertyChanges {
+                target: glowEffect
+                opacity: 0.5
+            }
+        }
+
+        transitions: Transition {
+            PropertyAnimation {
+                properties: "opacity"
+                duration: 200
+            }
+        }
+
+        Behavior on color {
+            ColorAnimation { duration: 150 }
+        }
+    }
+
+    contentItem: Text {
+        text: root.text
+        font.pixelSize: 16
+        font.bold: true
+        color: "#ffffff"
+        horizontalAlignment: Text.AlignHCenter
+        verticalAlignment: Text.AlignVCenter
+    }
+
+    // Click animation
+    onPressed: {
+        clickAnimation.start()
+    }
+
+    SequentialAnimation {
+        id: clickAnimation
+        PropertyAnimation {
+            target: root
+            property: "scale"
+            to: 0.95
+            duration: 50
+        }
+        PropertyAnimation {
+            target: root
+            property: "scale"
+            to: 1.0
+            duration: 100
+            easing.type: Easing.OutBack
+        }
+    }
+}
+""".trimIndent()
+}
