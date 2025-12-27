@@ -2,7 +2,6 @@ package com.github.drewchase.intellij_plugin.qt_project_setup.wizard
 
 import com.github.drewchase.intellij_plugin.qt_project_setup.generation.QtProjectFilesGenerator
 import com.intellij.facet.ui.ValidationResult
-import com.intellij.icons.AllIcons
 import com.intellij.ide.util.projectWizard.AbstractNewProjectStep
 import com.intellij.ide.util.projectWizard.CustomStepProjectGenerator
 import com.intellij.openapi.diagnostic.Logger
@@ -11,6 +10,7 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.IconLoader
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.impl.welcomeScreen.AbstractActionWithPanel
 import com.intellij.platform.DirectoryProjectGenerator
@@ -31,7 +31,7 @@ class QtDirectoryProjectGenerator : DirectoryProjectGeneratorBase<QtProjectSetti
 
     override fun getName(): String = "Qt Windowed Application"
 
-    override fun getLogo(): Icon = AllIcons.Nodes.Module
+    override fun getLogo(): Icon = IconLoader.getIcon("/Qt_logo_16x16.png", QtDirectoryProjectGenerator::class.java)
 
     override fun getDescription(): String = "Creates a Qt 6 Windows application with CMake, QML support, and optional custom titlebar"
 

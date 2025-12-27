@@ -28,6 +28,7 @@ object QtProjectFilesGenerator {
             val resDir = VfsUtil.createDirectoryIfMissing(baseDir, "res")
             val stylesDir = VfsUtil.createDirectoryIfMissing(resDir, "styles")
             val qmlDir = VfsUtil.createDirectoryIfMissing(resDir, "qml")
+            val iconsDir = VfsUtil.createDirectoryIfMissing(resDir, "icons")
 
             val projectName = project.name
             val projectNameUpper = projectName.uppercase().replace("-", "_").replace(" ", "_")
@@ -66,6 +67,13 @@ object QtProjectFilesGenerator {
             // Generate QML files
             writeFile(qmlDir, "main.qml", generateMainQml())
             writeFile(qmlDir, "AnimatedButton.qml", generateAnimatedButtonQml())
+
+            // Copy icon files
+            copyResourceFile(iconsDir, "app.ico", "/Qt.ico")
+            copyResourceFile(iconsDir, "app.png", "/Qt_logo_1024x1024.png")
+
+            // Generate Windows resource file for executable icon
+            writeFile(resDir, "app.rc", generateWindowsResourceFile())
                 } catch (e: Throwable) {
                     error = e
                 } finally {
@@ -83,6 +91,20 @@ object QtProjectFilesGenerator {
         dir?.let {
             val file = dir.createChildData(this, fileName)
             VfsUtil.saveText(file, content)
+        }
+    }
+
+    private fun copyResourceFile(dir: VirtualFile?, fileName: String, resourcePath: String) {
+        dir?.let {
+            val inputStream = QtProjectFilesGenerator::class.java.getResourceAsStream(resourcePath)
+            if (inputStream != null) {
+                val file = dir.createChildData(this, fileName)
+                file.getOutputStream(this).use { output ->
+                    inputStream.use { input ->
+                        input.copyTo(output)
+                    }
+                }
+            }
         }
     }
 
@@ -118,11 +140,17 @@ file(GLOB_RECURSE SOURCES "src/*.cpp")
 file(GLOB_RECURSE HEADERS "include/*.h")
 file(GLOB_RECURSE UI "ui/*.ui")
 
+# Windows application icon resource
+if(WIN32)
+    set(WIN_RC res/app.rc)
+endif()
+
 add_executable(${"$"}{CMAKE_PROJECT_NAME}
     ${"$"}{SOURCES}
     ${"$"}{HEADERS}
     ${"$"}{UI}
     res/resources.qrc
+    ${"$"}{WIN_RC}
 )
 
 target_include_directories(${"$"}{CMAKE_PROJECT_NAME} PRIVATE include)
@@ -382,6 +410,7 @@ endfunction()
 #include <QQuickStyle>
 #include <QDir>
 #include <QFileInfo>
+#include <QIcon>
 #include "ui/mainwindow.h"
 
 #ifdef Q_OS_WIN
@@ -410,6 +439,9 @@ int main(int argc, char *argv[]) {
 #endif
 
     QApplication app(argc, argv);
+
+    // Set the application icon
+    app.setWindowIcon(QIcon(":/icons/app.png"));
 
     // Set the Quick Controls style
     QQuickStyle::setStyle("Fusion");
@@ -1003,6 +1035,47 @@ void MainWindow::setupQmlWidget() {
         <number>0</number>
        </property>
        <item>
+        <widget class="QLabel" name="iconLabel">
+         <property name="minimumSize">
+          <size>
+           <width>24</width>
+           <height>24</height>
+          </size>
+         </property>
+         <property name="maximumSize">
+          <size>
+           <width>24</width>
+           <height>24</height>
+          </size>
+         </property>
+         <property name="text">
+          <string/>
+         </property>
+         <property name="pixmap">
+          <pixmap resource="../res/resources.qrc">:/icons/app.png</pixmap>
+         </property>
+         <property name="scaledContents">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="iconSpacer">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+         <property name="sizeType">
+          <enum>QSizePolicy::Fixed</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>8</width>
+           <height>0</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+       <item>
         <widget class="QLabel" name="titleLabel">
          <property name="text">
           <string>${settings.windowTitle}</string>
@@ -1125,6 +1198,8 @@ void MainWindow::setupQmlWidget() {
 <RCC>
   <qresource prefix="/">
     <file>styles/base.qss</file>
+    <file>icons/app.ico</file>
+    <file>icons/app.png</file>
   </qresource>
   <qresource prefix="/">
     <file>qml/main.qml</file>
@@ -1371,5 +1446,9 @@ Button {
         }
     }
 }
+""".trimIndent()
+
+    private fun generateWindowsResourceFile(): String = """
+IDI_ICON1 ICON "icons/app.ico"
 """.trimIndent()
 }
