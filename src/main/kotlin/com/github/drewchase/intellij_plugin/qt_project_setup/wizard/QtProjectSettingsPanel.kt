@@ -86,17 +86,13 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
 
             row("Minimum Width:") {
                 cell(minWidthSpinner)
+                label("Startup Width:")
+                cell(startupWidthSpinner)
             }
 
             row("Minimum Height:") {
                 cell(minHeightSpinner)
-            }
-
-            row("Startup Width:") {
-                cell(startupWidthSpinner)
-            }
-
-            row("Startup Height:") {
+                label("Startup Height:")
                 cell(startupHeightSpinner)
             }
 
