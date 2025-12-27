@@ -1,6 +1,7 @@
 package com.github.drewchase.intellij_plugin.qt_project_setup.generation
 
 import com.github.drewchase.intellij_plugin.qt_project_setup.wizard.QtProjectSettings
+import com.github.drewchase.intellij_plugin.qt_project_setup.wizard.QtUiFramework
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.project.Project
@@ -40,8 +41,10 @@ object QtProjectFilesGenerator {
             // Generate .idea/cmake.xml with Qt path
             writeFile(ideaDir, "cmake.xml", generateCmakeXml(qtPath))
 
+            val useQml = settings.uiFramework == QtUiFramework.QML
+
             // Generate CMakeLists.txt
-            writeFile(baseDir, "CMakeLists.txt", generateCMakeLists(projectName, settings.useStaticQt))
+            writeFile(baseDir, "CMakeLists.txt", generateCMakeLists(projectName, settings.useStaticQt, useQml))
 
             // Generate cmake helper based on static/dynamic linking
             if (settings.useStaticQt) {
@@ -51,25 +54,25 @@ object QtProjectFilesGenerator {
             }
 
             // Generate src/main.cpp
-            writeFile(srcDir, "main.cpp", generateMainCpp(settings))
+            writeFile(srcDir, "main.cpp", generateMainCpp(settings, useQml))
 
             // Generate mainwindow files based on titlebar setting
             if (settings.useCustomTitlebar) {
-                writeFile(includeUiDir, "mainwindow.h", generateMainWindowHeaderCustom(projectNameUpper, settings.useStaticQt))
-                writeFile(srcUiDir, "mainwindow.cpp", generateMainWindowCppCustom(settings.useStaticQt))
+                writeFile(includeUiDir, "mainwindow.h", generateMainWindowHeaderCustom(projectNameUpper, useQml))
+                writeFile(srcUiDir, "mainwindow.cpp", generateMainWindowCppCustom(useQml))
                 writeFile(uiDir, "mainwindow.ui", generateMainWindowUiCustom(settings))
             } else {
-                writeFile(includeUiDir, "mainwindow.h", generateMainWindowHeader(projectNameUpper, settings.useStaticQt))
-                writeFile(srcUiDir, "mainwindow.cpp", generateMainWindowCpp(settings.useStaticQt))
+                writeFile(includeUiDir, "mainwindow.h", generateMainWindowHeader(projectNameUpper, useQml))
+                writeFile(srcUiDir, "mainwindow.cpp", generateMainWindowCpp(useQml))
                 writeFile(uiDir, "mainwindow.ui", generateMainWindowUi(settings))
             }
 
             // Generate resources
-            writeFile(resDir, "resources.qrc", generateResourcesQrc(settings.useStaticQt))
+            writeFile(resDir, "resources.qrc", generateResourcesQrc(useQml))
             writeFile(stylesDir, "base.qss", generateBaseQss(settings.useCustomTitlebar))
 
-            // Generate QML files (only for dynamic Qt builds)
-            if (!settings.useStaticQt) {
+            // Generate QML files (only when QML framework is selected)
+            if (useQml) {
                 writeFile(qmlDir, "main.qml", generateMainQml())
                 writeFile(qmlDir, "AnimatedButton.qml", generateAnimatedButtonQml())
             }
@@ -133,21 +136,21 @@ bin/
 </project>
 """.trimIndent()
 
-    private fun generateCMakeLists(projectName: String, useStaticQt: Boolean): String {
+    private fun generateCMakeLists(projectName: String, useStaticQt: Boolean, useQml: Boolean): String {
         val cmakeHelper = if (useStaticQt) "QtStaticHelpers" else "QtDynamicHelpers"
         val configureFunction = if (useStaticQt) "configure_qt_static_target" else "configure_qt_dynamic_target"
 
-        // Static Qt typically doesn't include QML modules due to complexity
-        val qtModules = if (useStaticQt) {
-            """    Widgets
-    Gui"""
-        } else {
+        // Include QML modules only when QML framework is selected
+        val qtModules = if (useQml) {
             """    Widgets
     Gui
     Quick
     Qml
     QuickWidgets
     QuickControls2"""
+        } else {
+            """    Widgets
+    Gui"""
         }
 
         return """
@@ -430,6 +433,24 @@ endfunction()
 
 message(STATUS "QtStaticHelpers module loaded.")
 
+# Use CMAKE_SOURCE_DIR to break out of the "obj" build folder
+set(OUTPUT_BASE_DIR "${"$"}{CMAKE_SOURCE_DIR}/bin")
+if (MSVC)
+    # MSVC appends /Debug or /Release automatically
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${"$"}{OUTPUT_BASE_DIR}")
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${"$"}{OUTPUT_BASE_DIR}")
+    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${"$"}{OUTPUT_BASE_DIR}")
+else ()
+    string(TOLOWER "${"$"}{CMAKE_BUILD_TYPE}" BUILD_TYPE_LOWER)
+    if (NOT BUILD_TYPE_LOWER)
+        set(BUILD_TYPE_LOWER "debug")
+    endif ()
+
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${"$"}{OUTPUT_BASE_DIR}/${"$"}{BUILD_TYPE_LOWER}")
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${"$"}{OUTPUT_BASE_DIR}/${"$"}{BUILD_TYPE_LOWER}")
+    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${"$"}{OUTPUT_BASE_DIR}/${"$"}{BUILD_TYPE_LOWER}")
+endif ()
+
 #[[
 # configure_qt_static_target
 #
@@ -515,9 +536,9 @@ function(configure_qt_static_target TARGET_NAME)
 endfunction()
 """.trimIndent()
 
-    private fun generateMainCpp(settings: QtProjectSettings): String {
-        return if (settings.useStaticQt) {
-            // Static Qt build - no QML/Quick support
+    private fun generateMainCpp(settings: QtProjectSettings, useQml: Boolean): String {
+        return if (!useQml) {
+            // Qt Widgets only - no QML/Quick
             """
 #include <QApplication>
 #include <QIcon>
@@ -537,7 +558,7 @@ int main(int argc, char *argv[]) {
 }
 """.trimIndent()
         } else {
-            // Dynamic Qt build - full QML/Quick support
+            // QML/Quick support
             """
 #include <QApplication>
 #include <QQmlApplicationEngine>
@@ -590,9 +611,9 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    private fun generateMainWindowHeader(projectNameUpper: String, useStaticQt: Boolean): String {
-        val qmlIncludes = if (useStaticQt) "" else "#include <QQuickWidget>\n"
-        val qmlMembers = if (useStaticQt) "" else """
+    private fun generateMainWindowHeader(projectNameUpper: String, useQml: Boolean): String {
+        val qmlIncludes = if (!useQml) "" else "#include <QQuickWidget>\n"
+        val qmlMembers = if (!useQml) "" else """
     QQuickWidget *qmlWidget;
     void setupQmlWidget();"""
 
@@ -626,9 +647,9 @@ private:
 """.trimIndent()
     }
 
-    private fun generateMainWindowHeaderCustom(projectNameUpper: String, useStaticQt: Boolean): String {
-        val qmlIncludes = if (useStaticQt) "" else "#include <QQuickWidget>\n"
-        val qmlMembers = if (useStaticQt) "" else """
+    private fun generateMainWindowHeaderCustom(projectNameUpper: String, useQml: Boolean): String {
+        val qmlIncludes = if (!useQml) "" else "#include <QQuickWidget>\n"
+        val qmlMembers = if (!useQml) "" else """
     QQuickWidget *qmlWidget;
     void setupQmlWidget();"""
 
@@ -683,8 +704,8 @@ private:
 """.trimIndent()
     }
 
-    private fun generateMainWindowCpp(useStaticQt: Boolean): String {
-        return if (useStaticQt) {
+    private fun generateMainWindowCpp(useQml: Boolean): String {
+        return if (!useQml) {
             """
 #include "ui/mainwindow.h"
 #include "ui_mainwindow.h"
@@ -761,10 +782,10 @@ void MainWindow::setupQmlWidget() {
         }
     }
 
-    private fun generateMainWindowCppCustom(useStaticQt: Boolean): String {
-        val qmlMemberInit = if (useStaticQt) "" else "\n      , qmlWidget(nullptr)"
-        val setupQmlCall = if (useStaticQt) "" else "\n    setupQmlWidget();"
-        val qmlSetupFunction = if (useStaticQt) "" else """
+    private fun generateMainWindowCppCustom(useQml: Boolean): String {
+        val qmlMemberInit = if (!useQml) "" else "\n      , qmlWidget(nullptr)"
+        val setupQmlCall = if (!useQml) "" else "\n    setupQmlWidget();"
+        val qmlSetupFunction = if (!useQml) "" else """
 
 void MainWindow::setupQmlWidget() {
     qmlWidget = new QQuickWidget(this);
@@ -782,7 +803,7 @@ void MainWindow::setupQmlWidget() {
         layout->addWidget(qmlWidget);
     }
 }"""
-        val vboxLayoutInclude = if (useStaticQt) "" else "#include <QVBoxLayout>\n"
+        val vboxLayoutInclude = if (!useQml) "" else "#include <QVBoxLayout>\n"
 
         return """
 #include "ui/mainwindow.h"
@@ -1374,8 +1395,8 @@ void MainWindow::loadStyleSheet() {
 </ui>
 """.trimIndent()
 
-    private fun generateResourcesQrc(useStaticQt: Boolean): String {
-        val qmlResources = if (useStaticQt) "" else """
+    private fun generateResourcesQrc(useQml: Boolean): String {
+        val qmlResources = if (!useQml) "" else """
   <qresource prefix="/">
     <file>qml/main.qml</file>
     <file>qml/AnimatedButton.qml</file>

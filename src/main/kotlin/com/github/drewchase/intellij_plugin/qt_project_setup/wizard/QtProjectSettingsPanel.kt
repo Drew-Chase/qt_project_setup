@@ -12,6 +12,8 @@ import com.intellij.ui.dsl.builder.AlignX
 import com.intellij.ui.dsl.builder.Panel
 import com.intellij.ui.dsl.builder.panel
 import java.io.File
+import javax.swing.DefaultComboBoxModel
+import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JSpinner
 import javax.swing.SpinnerNumberModel
@@ -24,6 +26,7 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
         private val LOG = Logger.getInstance(QtProjectSettingsPanel::class.java)
         private const val QT_PATH_PROPERTY_KEY = "qt.project.setup.qt.path"
         private const val USE_STATIC_QT_PROPERTY_KEY = "qt.project.setup.use.static.qt"
+        private const val UI_FRAMEWORK_PROPERTY_KEY = "qt.project.setup.ui.framework"
         private const val DEFAULT_QT_PATH = "C:/Qt/6.8.0/mingw_64"
     }
 
@@ -50,6 +53,14 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
         "Use statically linked Qt",
         PropertiesComponent.getInstance().getBoolean(USE_STATIC_QT_PROPERTY_KEY, false)
     )
+    private val uiFrameworkComboBox = JComboBox(DefaultComboBoxModel(QtUiFramework.entries.toTypedArray())).apply {
+        val savedFramework = PropertiesComponent.getInstance().getValue(UI_FRAMEWORK_PROPERTY_KEY, QtUiFramework.WIDGETS.name)
+        selectedItem = try {
+            QtUiFramework.valueOf(savedFramework)
+        } catch (e: IllegalArgumentException) {
+            QtUiFramework.WIDGETS
+        }
+    }
 
     init {
         LOG.info("QtProjectSettingsPanel: Constructor called")
@@ -59,11 +70,13 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
         LOG.info("QtProjectSettingsPanel.getSettings() called")
         val qtPath = qtPathField.text
         val useStaticQt = useStaticQtCheckbox.isSelected
+        val uiFramework = uiFrameworkComboBox.selectedItem as QtUiFramework
 
         // Cache settings for future use
         val properties = PropertiesComponent.getInstance()
         properties.setValue(QT_PATH_PROPERTY_KEY, qtPath)
         properties.setValue(USE_STATIC_QT_PROPERTY_KEY, useStaticQt)
+        properties.setValue(UI_FRAMEWORK_PROPERTY_KEY, uiFramework.name)
 
         return QtProjectSettings(
             qtPath = qtPath,
@@ -73,7 +86,8 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
             startupWidth = startupWidthSpinner.value as Int,
             startupHeight = startupHeightSpinner.value as Int,
             useCustomTitlebar = useCustomTitlebarCheckbox.isSelected,
-            useStaticQt = useStaticQt
+            useStaticQt = useStaticQt,
+            uiFramework = uiFramework
         )
     }
 
@@ -91,6 +105,9 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
 
         // Add listener to trigger validation when static Qt checkbox changes
         useStaticQtCheckbox.addActionListener { checkValid.run() }
+
+        // Add listener to trigger validation when UI framework changes
+        uiFrameworkComboBox.addActionListener { checkValid.run() }
 
         return panel {
             attachTo(this)
@@ -111,6 +128,10 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
             row("Window Title:") {
                 cell(windowTitleField)
                     .align(AlignX.FILL)
+            }
+
+            row("UI Framework:") {
+                cell(uiFrameworkComboBox)
             }
 
             row("Minimum Width:") {
@@ -137,6 +158,7 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
         LOG.info("QtProjectSettingsPanel.validate() called")
         val qtPath = qtPathField.text
         val useStaticQt = useStaticQtCheckbox.isSelected
+        val uiFramework = uiFrameworkComboBox.selectedItem as QtUiFramework
 
         if (qtPath.isBlank()) {
             return ValidationInfo("Qt installation path cannot be empty", qtPathField)
@@ -173,6 +195,12 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
                 return ValidationInfo("Qt installation path should contain 'Qt6Core.dll'", qtPathField)
             }
         }
+
+        // Warning for QML with static Qt
+        if (useStaticQt && uiFramework == QtUiFramework.QML) {
+            return ValidationInfo("Warning: QML with static Qt may not work as intended. Some features may be unavailable.", uiFrameworkComboBox).asWarning().withOKEnabled()
+        }
+
         return null
     }
 }
