@@ -17,6 +17,7 @@ import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JSpinner
 import javax.swing.SpinnerNumberModel
+import java.awt.event.ItemEvent
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 
@@ -104,7 +105,11 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
         })
 
         // Add listener to trigger validation when static Qt checkbox changes
-        useStaticQtCheckbox.addActionListener { checkValid.run() }
+        useStaticQtCheckbox.addItemListener { e ->
+            if (e.stateChange == ItemEvent.SELECTED || e.stateChange == ItemEvent.DESELECTED) {
+                checkValid.run()
+            }
+        }
 
         // Add listener to trigger validation when UI framework changes
         uiFrameworkComboBox.addActionListener { checkValid.run() }
