@@ -1,0 +1,37 @@
+<!-- Plugin Configuration File: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <!-- Unique identifier of the plugin. It should be FQN, cannot be changed between the plugin versions. -->
+    <id>com.github.drewchase.intellij_plugin.qtprojectsetup.qt_project_setup</id>
+
+    <!-- Public plugin name should be written in Title Case. -->
+    <name>Qt Project Setup</name>
+
+    <!-- A displayed Vendor name or Organization ID displayed on the Plugins Page. -->
+    <vendor url="https://github.com/drewchase">Drew Chase</vendor>
+
+    <!-- Description of the plugin displayed on the Plugin Page and IDE Plugin Manager. -->
+    <description><![CDATA[
+        Creates Qt 6 Windows application projects with dynamic linking support.<br><br>
+        <b>Features:</b>
+        <ul>
+            <li>New Project wizard for Qt 6 applications</li>
+            <li>Configurable Qt installation path</li>
+            <li>Custom window dimensions (startup and minimum)</li>
+            <li>Optional custom frameless titlebar with drag support</li>
+            <li>Organized directory structure (src/, include/, ui/)</li>
+            <li>Dynamic Qt linking with CMake helper module</li>
+            <li>Includes QSS stylesheet and QRC resource system</li>
+            <li>QML support with animated button example</li>
+        </ul>
+    ]]></description>
+
+    <!-- Product and plugin compatibility requirements. -->
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.clion</depends>
+
+    <!-- Extensions defined by the plugin. -->
+    <extensions defaultExtensionNs="com.intellij">
+        <directoryProjectGenerator
+                implementation="com.github.drewchase.intellij_plugin.qt_project_setup.wizard.QtDirectoryProjectGenerator"/>
+    </extensions>
+</idea-plugin>
