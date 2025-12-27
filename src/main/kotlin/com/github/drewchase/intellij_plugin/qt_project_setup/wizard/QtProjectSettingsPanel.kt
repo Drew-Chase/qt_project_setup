@@ -14,6 +14,8 @@ import java.io.File
 import javax.swing.JComponent
 import javax.swing.JSpinner
 import javax.swing.SpinnerNumberModel
+import javax.swing.event.DocumentEvent
+import javax.swing.event.DocumentListener
 
 class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
 
@@ -62,7 +64,14 @@ class QtProjectSettingsPanel : GeneratorPeerImpl<QtProjectSettings>() {
     override fun getComponent(myLocationField: TextFieldWithBrowseButton, checkValid: Runnable): JComponent {
         LOG.info("QtProjectSettingsPanel.getComponent(locationField, checkValid) called")
         this.checkValid = checkValid
-//        return super.getComponent(myLocationField, checkValid)
+
+        // Add listener to trigger validation when Qt path changes
+        qtPathField.textField.document.addDocumentListener(object : DocumentListener {
+            override fun insertUpdate(e: DocumentEvent?) = checkValid.run()
+            override fun removeUpdate(e: DocumentEvent?) = checkValid.run()
+            override fun changedUpdate(e: DocumentEvent?) = checkValid.run()
+        })
+
         return panel {
             attachTo(this)
         }
